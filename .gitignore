@@ -1,10 +1,12 @@
 data/
 models/
 envs/
+src/
 .env
 .venv/
 .vscode/
 __pycache__/
 *.pyc
-notebooks/*.ipynb
+notebooks/*
+!notebooks/.gitkeep
 **/.ipynb_checkpoints/
