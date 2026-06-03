@@ -14,19 +14,24 @@ The mission engine server provides BT synthesis and status-evaluation responses 
 Implementation entrypoint:
 - `scripts/mission_engine_server1.py`
 
+Contribution 1 operational context:
+- This server is the dependency for `--test btaudit` mission calls.
+- It is also the dependency for Qwen3.5 replay (`scripts/replay_qwen35_bt_eval.py`) and strict batch reruns.
+- Server health must be validated when strict replay appears stalled at early episodes.
+
 ## Quick Start
 
 Run in a separate terminal before starting simulation:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python dabtroll/scripts/mission_engine_server1.py \
+CUDA_VISIBLE_DEVICES=1 python scripts/mission_engine_server1.py \
   --host 127.0.0.1 --port 5560 --model "Qwen/Qwen3-VL-8B-Instruct"
 ```
 
 Full explicit startup (all user-configurable flags shown):
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python dabtroll/scripts/mission_engine_server1.py \
+CUDA_VISIBLE_DEVICES=1 python scripts/mission_engine_server1.py \
   --host 127.0.0.1 \
   --port 5560 \
   --model "Qwen/Qwen3-VL-8B-Instruct" \
@@ -40,6 +45,77 @@ CUDA_VISIBLE_DEVICES=1 python dabtroll/scripts/mission_engine_server1.py \
 Notes on the explicit form:
 - Omit `--enable_thinking` if you want default behavior (thinking off).
 - Add `--disable_flash_attention_2` only when needed for compatibility/debugging.
+
+## Qwen3.5-9B Startup (Instruct, Non-Thinking, CUDA:1)
+
+Use this when you want to run DABTROLL mission-engine requests with `Qwen/Qwen3.5-9B` in non-thinking mode.
+
+1. Activate your dedicated environment:
+
+```bash
+conda activate dabtroll_qwen35
+```
+
+2. Start mission engine server on GPU 1:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python scripts/mission_engine_server1.py \
+  --host 127.0.0.1 \
+  --port 5560 \
+  --model "Qwen/Qwen3.5-9B" \
+  --device cuda \
+  --max_new_tokens 1024 \
+  --bt_max_new_tokens 1024
+```
+
+Important for non-thinking/instruct mode:
+- Do not pass `--enable_thinking`.
+- Server startup log for qwen3.5 should print `qwen3.5_mode=instruct_non_thinking`.
+
+3. Optional health probe (from another terminal) to confirm model, GPU visibility, and thinking flag:
+
+```bash
+python - <<'PY'
+import zmq
+ctx = zmq.Context.instance()
+sock = ctx.socket(zmq.REQ)
+sock.connect("tcp://127.0.0.1:5560")
+sock.send_json({"mode": "health"})
+print(sock.recv_json())
+PY
+```
+
+4. Run DABTROLL with btaudit against that server:
+
+```bash
+python scripts/simulation.py \
+  --mode dabtroll \
+  --test btaudit \
+  --env-name gr1_unified/PnPCanToDrawerClose_GR1ArmsAndWaistFourierHands_Env \
+  --mission-host 127.0.0.1 \
+  --mission-port 5560
+```
+
+## Qwen3.5-9B Startup (GPU 0 Variant)
+
+When GPU 1 is unavailable, use GPU 0 with the same non-thinking setup:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/mission_engine_server1.py \
+  --host 127.0.0.1 \
+  --port 5560 \
+  --model "Qwen/Qwen3.5-9B" \
+  --device cuda \
+  --max_new_tokens 1024 \
+  --bt_max_new_tokens 1024
+```
+
+If replay latency is high (for example 4-5 seconds per status step), first-episode completion can take a while; treat this as expected unless health checks fail repeatedly.
+
+Compatibility note:
+- `scripts/mission_engine_server1.py` is a direct transformers-based ZMQ server used by DABTROLL.
+- SGLang/vLLM/HF `serve` commands from model cards launch OpenAI-style HTTP endpoints, which are different from this ZMQ server contract.
+- You only need SGLang/vLLM if you plan to add an HTTP-to-ZMQ adapter or change DABTROLL mission client protocol.
 
 Then start simulation (in another terminal) with matching mission host/port:
 
@@ -73,6 +149,11 @@ python scripts/simulation.py \
 | `--rcv_timeout_ms` | int | `0` | Optional ZMQ receive timeout; `0` means wait indefinitely |
 | `--enable_thinking` | flag | off | Enables thinking mode for supported models |
 | `--disable_flash_attention_2` | flag | off | Disables flash attention 2 even if available |
+
+Model-family behavior notes:
+- For `Qwen/Qwen3.5-4B` and `Qwen/Qwen3.5-9B`, thinking mode is controlled through chat-template kwargs.
+- Default is non-thinking/instruct unless `--enable_thinking` is provided.
+- On CUDA, qwen3.5 load prefers bf16 and automatically falls back to fp16 if needed.
 
 ## Server Capabilities
 
@@ -185,6 +266,13 @@ During run:
 1. Watch terminal for request/response logs and latency.
 2. If latency spikes, reduce load (fewer frames, lower token budgets).
 
+During strict replay runs:
+
+1. Keep mission server terminal visible for request/response lines.
+2. If batch remains on `[1/N]` unusually long, run a health probe.
+3. If health probe fails repeatedly, restart mission server before relaunching batch.
+4. Use replay stop guards (`MAX_CONSEC_*`, `MAX_TOTAL_FAILS`) to fail fast on CUDA instability.
+
 ## Troubleshooting
 
 1. `image_path does not exist`
@@ -206,6 +294,10 @@ Fix: verify bind line on startup and match `--mission-host/--mission-port` in si
 5. CUDA or model load failures
 Cause: missing dependencies, unsupported hardware/runtime mismatch.
 Fix: verify environment, torch/transformers versions, and model availability in cache.
+
+6. qwen3.5 starts but is unexpectedly in thinking mode
+Cause: server started with `--enable_thinking`.
+Fix: restart server without `--enable_thinking`; verify startup line shows `qwen3.5_mode=instruct_non_thinking`.
 
 ## Recommended Defaults
 

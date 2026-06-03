@@ -8,6 +8,23 @@ References:
 - RoboCasa GR1 tabletop tasks: https://github.com/robocasa/robocasa-gr1-tabletop-tasks
 - GR00T (task engine): https://github.com/NVIDIA/Isaac-GR00T
 
+## 0. Current Contributor Focus: Contribution 1
+
+Contribution 1 in this repository is the btaudit evaluation workflow plus robust Qwen3.5 replay validation.
+
+Primary goals:
+- run `--test btaudit` simulation episodes to generate artifacts/workbooks;
+- replay mission status evaluation with Qwen 3.5 on those artifacts;
+- stop early on repeated CUDA/response failures;
+- avoid duplicate reruns by using resume state and manifests.
+
+Core scripts for Contribution 1:
+- `scripts/simulation.py` (`--mode dabtroll --test btaudit`)
+- `scripts/replay_qwen35_bt_eval.py` (single/multi-episode replay)
+- `scripts/run_replay_episodes_2_21_all_runs.sh` (batch replay with stop guards and resume)
+- `scripts/audit_qwen35_sheet3_quality.py` (robust keep/rerun audit)
+- `docs/replay_qwen35_eval_readme.md` (detailed replay and quality workflow)
+
 ## 1. Canonical Run Command (DABTROLL)
 
 ```bash
@@ -57,6 +74,8 @@ CUDA_VISIBLE_DEVICES=1 python dabtroll/scripts/mission_engine_server1.py \
 Mission engine details and options are documented in [docs/mission_engine_server.md](docs/mission_engine_server.md).
 
 Data management and semantic indexing details are documented in [docs/knowledge_base.md](docs/knowledge_base.md).
+
+For Contribution 1 strict replay details, see [docs/replay_qwen35_eval_readme.md](docs/replay_qwen35_eval_readme.md).
 
 ## 3. Runtime Execution Path
 
@@ -183,6 +202,47 @@ python scripts/simulation.py \
   --isaac-gr00t-root /home/mark/dev/Isaac-GR00T
 ```
 
+## 8.1 Contribution 1 Commands (btaudit + Qwen3.5 Replay)
+
+Run btaudit simulation:
+
+```bash
+python scripts/simulation.py \
+  --mode dabtroll \
+  --test btaudit \
+  --env-name gr1_unified/PnPCanToDrawerClose_GR1ArmsAndWaistFourierHands_Env \
+  --n-episodes 21 \
+  --max-episode-steps 920 \
+  --status-eval-seconds 2 \
+  --status-window-seconds 4 \
+  --project-root /home/mark/dabtroll \
+  --isaac-gr00t-root /home/mark/dev/Isaac-GR00T
+```
+
+Run strict replay batch with stop/resume controls:
+
+```bash
+SOURCE_MANIFEST=/home/mark/dabtroll/data/logs/replay_episodes_2_21_strict_bad_manifest_<RUN_TAG>.txt \
+RESUME_SKIP_SUCCESSES=0 \
+MAX_CONSEC_FAILS=2 \
+MAX_TOTAL_FAILS=10 \
+MAX_CONSEC_CUDA_FAILS=1 \
+MIN_RESPONSE_OK_RATIO=1.0 \
+MISSION_TIMEOUT_MS=8000 \
+/home/mark/dabtroll/scripts/run_replay_episodes_2_21_all_runs.sh
+```
+
+Audit latest replay quality and split keep/rerun manifests:
+
+```bash
+python scripts/audit_qwen35_sheet3_quality.py \
+  --logs-root /home/mark/dabtroll/data/logs \
+  --min-response-ok-ratio 1.0 \
+  --audit-json-out /home/mark/dabtroll/data/logs/replay_episodes_2_21_quality_audit_<RUN_TAG>.json \
+  --keep-manifest-out /home/mark/dabtroll/data/logs/replay_episodes_2_21_keep_manifest_<RUN_TAG>.txt \
+  --rerun-manifest-out /home/mark/dabtroll/data/logs/replay_episodes_2_21_rerun_manifest_<RUN_TAG>.txt
+```
+
 ## 9. Semantic Index Workflow
 
 Simulation now writes unified semantic docs into the txtai index under `data/txtai_store`.
@@ -266,3 +326,18 @@ Status output fields:
 - `gr1_unified/PosttrainPnPNovelFromTrayToPotSplitA_GR1ArmsAndWaistFourierHands_Env`
 - `gr1_unified/PosttrainPnPNovelFromTrayToTieredbasketSplitA_GR1ArmsAndWaistFourierHands_Env`
 - `gr1_unified/PosttrainPnPNovelFromTrayToTieredshelfSplitA_GR1ArmsAndWaistFourierHands_Env`
+
+## 11. Updating This Repository (Contributor Checklist)
+
+Use this flow when publishing Contribution 1 updates to GitHub:
+
+1. Verify mission/replay outputs and docs are current.
+2. Add new scripts and notebook assets.
+3. Commit with a message that references btaudit + qwen3.5 replay quality work.
+4. Push to your branch and open/update the PR.
+
+Suggested staging command for current work:
+
+```bash
+git add README.md docs/*.md scripts/*.py scripts/*.sh notebooks/DABTROLL_Audit_Visualization_Planning_Notebook.ipynb
+```

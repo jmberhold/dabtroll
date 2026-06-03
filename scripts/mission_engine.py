@@ -122,12 +122,22 @@ def load_qwen(
             ctx.attn_implementation = "eager"
     else:
         if torch.cuda.is_available():
-            ctx.model = model_cls.from_pretrained(
-                model_id,
-                torch_dtype=torch.bfloat16,
-                device_map="auto",
-                low_cpu_mem_usage=False,
-            )
+            # Prefer bf16 for qwen3.5 on modern GPUs, but fall back to fp16
+            # for environments where bf16 kernels are unavailable/unstable.
+            try:
+                ctx.model = model_cls.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.bfloat16,
+                    device_map="auto",
+                    low_cpu_mem_usage=False,
+                )
+            except Exception:
+                ctx.model = model_cls.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    low_cpu_mem_usage=False,
+                )
         else:
             ctx.model = model_cls.from_pretrained(
                 model_id,

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -22,6 +24,48 @@ from task_engine import (
     select_action_key,
     summarize_info,
 )
+
+
+def _auto_generate_eval_workbook(summary: Dict[str, Any]) -> None:
+    """Generate per-episode human-rater workbook when episode artifacts are available."""
+    episode_dir_text = str(summary.get("episode_dir", "") or "").strip()
+    if not episode_dir_text:
+        return
+
+    episode_dir = Path(episode_dir_text)
+    if not episode_dir.exists():
+        print(f"[auto_eval_workbook] skipped: episode_dir does not exist: {episode_dir}")
+        return
+
+    script_path = Path(__file__).resolve().parent / "generate_human_eval_workbook.py"
+    if not script_path.exists():
+        print(f"[auto_eval_workbook] skipped: generator script missing: {script_path}")
+        return
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--episode-dir",
+        str(episode_dir),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except Exception as exc:
+        print(f"[auto_eval_workbook] failed to run generator: {exc}")
+        return
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        print("[auto_eval_workbook] generation failed")
+        if detail:
+            print(detail)
+        return
+
+    workbook_path = episode_dir / "human_rater_evaluation.xlsx"
+    if workbook_path.exists():
+        print(f"[auto_eval_workbook] generated: {workbook_path}")
+    else:
+        print("[auto_eval_workbook] generator succeeded but workbook file not found")
 
 
 def build_env(config: PipelineConfig, video_dir: Path):
@@ -207,6 +251,7 @@ def main() -> None:
     ap.add_argument("--mission-port", type=int, default=5560)
     ap.add_argument("--mission-timeout-ms", type=int, default=120000)
     ap.add_argument("--bt-timeout-ms", type=int, default=240000)
+    ap.add_argument("--bt-max-new-tokens", type=int, default=1024)
     ap.add_argument(
         "--frame-every-n-steps",
         type=int,
@@ -266,7 +311,20 @@ def main() -> None:
     ap.add_argument("--preferred-action-key", default="action.left_arm")
     ap.add_argument("--isaac-gr00t-root", default=None)
     ap.add_argument("--project-root", default=None)
+    ap.add_argument(
+        "--test",
+        default="",
+        help="Optional test mode. Examples: gr00t_reset, btaudit",
+    )
+    ap.add_argument("--scenario-id", default="", help="Optional scenario identifier for experiment joins.")
+    ap.add_argument("--condition", default="", help="Optional condition label for experiment joins.")
+    ap.add_argument("--task-family", default="", help="Optional task-family label for experiment joins.")
     args = ap.parse_args()
+
+    btaudit_enabled = (str(args.test or "").strip().lower() == "btaudit") and (args.mode == "dabtroll")
+    status_window_frames = int(args.status_window_frames)
+    if btaudit_enabled and status_window_frames <= 0:
+        status_window_frames = 8
 
     base_cfg = PipelineConfig(
         env_name=args.env_name,
@@ -280,10 +338,11 @@ def main() -> None:
         mission_port=args.mission_port,
         mission_timeout_ms=args.mission_timeout_ms,
         bt_timeout_ms=args.bt_timeout_ms,
+        bt_max_new_tokens=args.bt_max_new_tokens,
         frame_every_n_steps=args.frame_every_n_steps,
         status_eval_seconds=args.status_eval_seconds,
         control_freq_hz=args.control_freq_hz,
-        status_window_frames=args.status_window_frames,
+        status_window_frames=status_window_frames,
         status_window_seconds=args.status_window_seconds,
         policy_refocus_on_failed_status=not args.disable_policy_refocus,
         policy_refocus_fail_streak=args.policy_refocus_fail_streak,
@@ -295,16 +354,71 @@ def main() -> None:
         preferred_action_key=args.preferred_action_key,
         isaac_groot_root=args.isaac_gr00t_root,
         project_root=args.project_root,
+        test=args.test,
+        episode_index=1,
+        episode_count=max(int(args.n_episodes), 1),
+        scenario_id=args.scenario_id,
+        condition=args.condition,
+        task_family=args.task_family,
     )
 
     summaries = []
+    shared_run_tag = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") if btaudit_enabled else ""
+    shared_bt_json: Optional[Dict[str, Any]] = None
+    shared_bt_raw_text = ""
+
     for ep_idx in range(int(args.n_episodes)):
-        cfg = PipelineConfig(**{**base_cfg.__dict__, "seed": base_cfg.seed + ep_idx})
+        episode_seed = base_cfg.seed if btaudit_enabled else (base_cfg.seed + ep_idx)
+        cfg = PipelineConfig(
+            **{
+                **base_cfg.__dict__,
+                "seed": episode_seed,
+                "episode_index": ep_idx + 1,
+                "episode_count": max(int(args.n_episodes), 1),
+                "run_tag": shared_run_tag if btaudit_enabled else base_cfg.run_tag,
+            }
+        )
         if args.mode == "dabtroll":
-            summary = run_dabtroll_episode(cfg)
+            summary = run_dabtroll_episode(
+                cfg,
+                prebuilt_bt_json=shared_bt_json if (btaudit_enabled and ep_idx > 0) else None,
+                prebuilt_bt_raw_text=shared_bt_raw_text if (btaudit_enabled and ep_idx > 0) else "",
+                prebuilt_bt_source_episode=1 if btaudit_enabled else None,
+            )
             summary["mode"] = "dabtroll"
+
+            if btaudit_enabled and ep_idx == 0:
+                bt_json_path = summary.get("bt_json_path")
+                if not bt_json_path:
+                    abort_reason = summary.get("abort_reason")
+                    bt_variant_requested = summary.get("mission_engine_bt_variant_requested")
+                    bt_variant_returned = summary.get("mission_engine_bt_variant_returned")
+                    bt_action_nodes = summary.get("bt_action_nodes")
+                    bt_condition_nodes = summary.get("bt_condition_nodes")
+                    bt_control_nodes = summary.get("bt_control_nodes")
+                    raise RuntimeError(
+                        "btaudit episode 1 did not produce a reusable BT. "
+                        f"abort_reason={abort_reason}; "
+                        f"bt_variant_requested={bt_variant_requested}; "
+                        f"bt_variant_returned={bt_variant_returned}; "
+                        f"bt_action_nodes={bt_action_nodes}; "
+                        f"bt_condition_nodes={bt_condition_nodes}; "
+                        f"bt_control_nodes={bt_control_nodes}"
+                    )
+                bt_json_file = Path(str(bt_json_path))
+                if not bt_json_file.exists():
+                    raise RuntimeError(f"btaudit BT file not found: {bt_json_file}")
+                shared_bt_json = json.loads(bt_json_file.read_text(encoding="utf-8"))
+
+                bt_raw_path = summary.get("bt_raw_path")
+                if bt_raw_path and Path(str(bt_raw_path)).exists():
+                    shared_bt_raw_text = Path(str(bt_raw_path)).read_text(encoding="utf-8")
+                else:
+                    shared_bt_raw_text = json.dumps(shared_bt_json, ensure_ascii=True)
         else:
             summary = run_gr00t_episode(cfg, episode_index=ep_idx, project_root=args.project_root)
+
+        _auto_generate_eval_workbook(summary)
         summaries.append(summary)
         print(json.dumps(summary, indent=2))
 

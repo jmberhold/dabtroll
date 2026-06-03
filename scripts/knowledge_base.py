@@ -62,7 +62,10 @@ class EpisodePaths:
     bt_json_path: Path
     bt_raw_path: Path
     bt_svg_path: Path
+    bt_validation_path: Path
     status_log_path: Path
+    status_window_manifest_path: Path
+    episode_outcome_path: Path
     manifest_path: Path
 
 
@@ -131,7 +134,10 @@ class KnowledgeBase:
             bt_json_path=episode_dir / "bt.json",
             bt_raw_path=episode_dir / "qwen_bt_raw.txt",
             bt_svg_path=episode_dir / "bt.svg",
+            bt_validation_path=episode_dir / "bt_validation.json",
             status_log_path=episode_dir / "btstatus.jsonl",
+            status_window_manifest_path=episode_dir / "status_window_manifest.jsonl",
+            episode_outcome_path=episode_dir / "episode_outcome.json",
             manifest_path=episode_dir / "episode_manifest.json",
         )
 

@@ -74,6 +74,14 @@ def _match_event(hit: dict[str, Any], event: str | None) -> bool:
     return str(metadata.get("event", "")) == event
 
 
+def _match_metadata_field(hit: dict[str, Any], key: str, expected: str | None) -> bool:
+    """Filter by exact metadata field equality when expected is provided."""
+    if not expected:
+        return True
+    metadata = hit.get("metadata") or {}
+    return str(metadata.get(key, "")) == str(expected)
+
+
 def _format_hit(idx: int, hit: dict[str, Any]) -> str:
     """Render one search hit in human-friendly multi-line text."""
     hit_id = hit.get("id", "")
@@ -292,6 +300,10 @@ def main() -> None:
         default="",
         help="Optional trace event filter (use with --type trace_event)",
     )
+    parser.add_argument("--episode-id", default="", help="Optional episode_id metadata filter")
+    parser.add_argument("--scenario-id", default="", help="Optional scenario_id metadata filter")
+    parser.add_argument("--condition", default="", help="Optional condition metadata filter")
+    parser.add_argument("--task-family", default="", help="Optional task_family metadata filter")
     parser.add_argument(
         "--json",
         action="store_true",
@@ -340,6 +352,14 @@ def main() -> None:
             continue
         if not _match_event(hit, args.event or None):
             continue
+        if not _match_metadata_field(hit, "episode_id", args.episode_id or None):
+            continue
+        if not _match_metadata_field(hit, "scenario_id", args.scenario_id or None):
+            continue
+        if not _match_metadata_field(hit, "condition", args.condition or None):
+            continue
+        if not _match_metadata_field(hit, "task_family", args.task_family or None):
+            continue
         filtered.append(hit)
         if len(filtered) >= int(args.k):
             break
@@ -353,7 +373,9 @@ def main() -> None:
     print(
         "filters="
         f"type={args.type} run_id={args.run_id or '*'} mode={args.mode or '*'} "
-        f"env_name={args.env_name or '*'} event={args.event or '*'}"
+        f"env_name={args.env_name or '*'} event={args.event or '*'} "
+        f"episode_id={args.episode_id or '*'} scenario_id={args.scenario_id or '*'} "
+        f"condition={args.condition or '*'} task_family={args.task_family or '*'}"
     )
     print(f"results={len(filtered)}")
 

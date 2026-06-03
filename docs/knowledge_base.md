@@ -9,6 +9,7 @@ Covers:
 - txtai semantic indexing backend
 - Unified index schema and query filters
 - Validation and troubleshooting
+- Contribution 1 replay-quality artifacts and manifests
 
 Primary code paths:
 - [scripts/knowledge_base.py](../scripts/knowledge_base.py)
@@ -25,6 +26,14 @@ Runtime data is written under `data/`:
 - `data/video/`: rollout video outputs
 - `data/txtai_store/`: semantic index store
 - `data/txtai_store/index/`: txtai index files (`config.json`, `embeddings`, `ids`)
+
+Contribution 1 replay-quality outputs in `data/logs/` include:
+- `replay_episodes_2_21_run_report_<RUN_TAG>.txt/.json`
+- `replay_episodes_2_21_error_report_<RUN_TAG>.txt`
+- `replay_episodes_2_21_pending_manifest_<RUN_TAG>.txt`
+- `replay_episodes_2_21_resume_state.jsonl`
+- `replay_episodes_2_21_keep_manifest_<RUN_TAG>.txt`
+- `replay_episodes_2_21_rerun_manifest_<RUN_TAG>.txt`
 
 ## What Gets Indexed
 
