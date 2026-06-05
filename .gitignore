@@ -9,4 +9,5 @@ __pycache__/
 *.pyc
 notebooks/*
 !notebooks/.gitkeep
+!notebooks/VIBTRAVE_Visualizations.ipynb
 **/.ipynb_checkpoints/
