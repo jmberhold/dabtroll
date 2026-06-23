@@ -185,6 +185,7 @@ def run_gr00t_episode(config: PipelineConfig, episode_index: int, project_root: 
                     frame_path="",
                     state_keys=state_keys,
                     preferred_state_key=config.state_key,
+                    info_summary=final_info_summary,
                 ),
                 "ts": datetime.utcnow().timestamp(),
             },
@@ -314,14 +315,16 @@ def main() -> None:
     ap.add_argument(
         "--test",
         default="",
-        help="Optional test mode. Examples: gr00t_reset, btaudit",
+        help="Optional test mode. Examples: gr00t_reset, btaudit, btaudit2",
     )
     ap.add_argument("--scenario-id", default="", help="Optional scenario identifier for experiment joins.")
     ap.add_argument("--condition", default="", help="Optional condition label for experiment joins.")
     ap.add_argument("--task-family", default="", help="Optional task-family label for experiment joins.")
     args = ap.parse_args()
 
-    btaudit_enabled = (str(args.test or "").strip().lower() == "btaudit") and (args.mode == "dabtroll")
+    normalized_test = str(args.test or "").strip().lower()
+    btaudit_enabled = (normalized_test in {"btaudit", "btaudit2"}) and (args.mode == "dabtroll")
+    btaudit2_enabled = (normalized_test == "btaudit2") and (args.mode == "dabtroll")
     status_window_frames = int(args.status_window_frames)
     if btaudit_enabled and status_window_frames <= 0:
         status_window_frames = 8
@@ -424,6 +427,8 @@ def main() -> None:
 
     if args.project_root:
         summary_root = Path(args.project_root).expanduser().resolve() / "data" / "logs"
+        if btaudit2_enabled:
+            summary_root = summary_root / "btaudit2"
     else:
         summary_root = Path.cwd()
     summary_run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")

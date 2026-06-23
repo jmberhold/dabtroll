@@ -2,60 +2,118 @@
 
 This guide explains how to replay mission-engine status evaluation on existing DABTROLL episode artifacts without rerunning simulation.
 
-This README is part of Contribution 1 documentation:
-- btaudit data generation;
-- Qwen3.5 mission replay;
-- strict quality gating (CUDA/error aware) with resume-safe reruns.
+The current workflow supports both:
+- Sheet 3 replay (`sheet3_qwen3_5_MissionEngine_Review`), and
+- Sheet 4 mod1 replay (`sheet4_qwen3_5_mod1_MissionEngine_Review`).
 
-The replay now reuses simulation-produced timing metadata by default:
-- Reads full episode frames from `frames/` and rebuilds eval windows from the beginning.
-- Uses timing metadata from `episode_summary.json` to match simulation cadence/window.
-- Uses the same prompt template (`status_eval_text`) with BT node metadata.
+## Operator Quickstart
 
-Default target (from your btaudit runs):
-- Evaluate every 2 seconds.
-- Use 4-second video windows.
+Use these when restarting after a CUDA stop. Set `PREV_RUN` to the last run directory that contains `pending_current.txt`.
 
-## What Replay Produces
+### 1) Resume Sheet 3
 
-For each episode directory, replay creates:
+```bash
+PREV_RUN=/home/mark/dabtroll/data/logs/replay_episodes_2_21_mod1_runs/<PREV_RUN_TAG>
+PENDING="$PREV_RUN/pending_current.txt"
+RUN_TAG=sheet3_rerun_resume_$(date -u +%Y%m%dT%H%M%SZ)
+
+REVIEW_SHEET_NAME=sheet3_qwen3_5_MissionEngine_Review \
+WINDOW_SOURCE=frames \
+BATCH_SIZE=20 \
+STOP_ON_CUDA=1 \
+MISSION_TIMEOUT_MS=30000 \
+EPISODE_MANIFEST="$PENDING" \
+AUTO_SKIP_COMPLETED=0 \
+/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh "$RUN_TAG"
+```
+
+### 2) Resume Sheet 4 (mod1)
+
+```bash
+PREV_RUN=/home/mark/dabtroll/data/logs/replay_episodes_2_21_mod1_runs/<PREV_RUN_TAG>
+PENDING="$PREV_RUN/pending_current.txt"
+RUN_TAG=sheet4_rerun_resume_$(date -u +%Y%m%dT%H%M%SZ)
+
+REVIEW_SHEET_NAME=sheet4_qwen3_5_mod1_MissionEngine_Review \
+WINDOW_SOURCE=frames \
+BATCH_SIZE=20 \
+STOP_ON_CUDA=1 \
+MISSION_TIMEOUT_MS=30000 \
+EPISODE_MANIFEST="$PENDING" \
+AUTO_SKIP_COMPLETED=0 \
+/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh "$RUN_TAG"
+```
+
+## Current Behavior (Important)
+
+The replay implementation in `scripts/replay_qwen35_bt_eval.py` is now frame-driven by default.
+
+- Default `--window-source` is `frames`.
+- It rebuilds replay windows from `frames/**/frame_*.jpg`.
+- It iterates BT state fresh using `BehaviorTreeRunner`.
+- It does not depend on old manifest timing unless you explicitly set `--window-source manifest`.
+- Prompts are BT-derived by default.
+
+Replay writes the review sheet only when mission responses are clean (no mission errors/CUDA-tagged errors in response rows).
+
+## What Replay Produces Per Episode
+
+For each episode, replay creates a new subfolder:
+
 - `qwen_3_5_<UTC_TIMESTAMP>/status_window_manifest.jsonl`
 - `qwen_3_5_<UTC_TIMESTAMP>/missionengine.jsonl`
 - `qwen_3_5_<UTC_TIMESTAMP>/pipeline_trace.jsonl`
 
-It also overwrites/adds only Sheet 3 in:
-- `human_rater_evaluation.xlsx`
-- Sheet name: `sheet3_qwen3_5_MissionEngine_Review`
+Replay also updates `human_rater_evaluation.xlsx`:
 
-Additionally, replay backfills missing `video_time_m:ss` values in `Sheet2_MissionEngine_Review` (only empty cells are filled; existing reviewer content is preserved).
+- Writes the requested review sheet via `--review-sheet-name`.
+- Backfills missing `video_time_m:ss` values in `Sheet2_MissionEngine_Review` (only empty cells are filled).
 
-## Contribution 1: End-to-End Flow
+The review sheet now includes `sim_success` (from `states_per_frame.jsonl` when present).
 
-1. Run btaudit simulation episodes to generate canonical artifacts.
-2. Replay mission status windows with Qwen 3.5 (`replay_qwen35_bt_eval.py`).
-3. Run strict batch replay over episode 2-21 manifests (`run_replay_episodes_2_21_all_runs.sh`).
-4. Run robust quality audit (`audit_qwen35_sheet3_quality.py`) to split keep/rerun manifests.
-5. Rerun only strict-bad episodes until quality criteria are met.
+## Required Episode Inputs
 
-## Required Inputs Per Episode
+### Always required
 
-Each episode directory must already contain:
 - `episode_summary.json`
 - `bt.json`
-- `status_window_manifest.jsonl`
 - `human_rater_evaluation.xlsx`
 
-## Run Command (Single Episode)
+### Required only for `--window-source manifest`
+
+- `status_window_manifest.jsonl`
+
+### Required only for `--window-source frames` (default)
+
+- Frame images under `frames/**/frame_*.jpg`
+
+## Single-Episode Replay
+
+Default frame-driven run (recommended):
 
 ```bash
 /home/mark/miniconda3/envs/robocasa_uv_conda/bin/python scripts/replay_qwen35_bt_eval.py \
   --episode-dir /home/mark/dabtroll/data/logs/<episode_dir> \
   --mission-host 127.0.0.1 \
   --mission-port 5560 \
-  --mission-timeout-ms 120000
+  --mission-timeout-ms 120000 \
+  --window-source frames \
+  --review-sheet-name sheet3_qwen3_5_MissionEngine_Review
 ```
 
-## Run Command (Multiple Episodes)
+Sheet 4 mod1 replay for a single episode:
+
+```bash
+/home/mark/miniconda3/envs/robocasa_uv_conda/bin/python scripts/replay_qwen35_bt_eval.py \
+  --episode-dir /home/mark/dabtroll/data/logs/<episode_dir> \
+  --mission-host 127.0.0.1 \
+  --mission-port 5560 \
+  --mission-timeout-ms 30000 \
+  --window-source frames \
+  --review-sheet-name sheet4_qwen3_5_mod1_MissionEngine_Review
+```
+
+## Multi-Episode Replay
 
 Repeat `--episode-dir`:
 
@@ -64,136 +122,156 @@ Repeat `--episode-dir`:
   --episode-dir /home/mark/dabtroll/data/logs/<episode_dir_1> \
   --episode-dir /home/mark/dabtroll/data/logs/<episode_dir_2> \
   --mission-host 127.0.0.1 \
-  --mission-port 5560
+  --mission-port 5560 \
+  --window-source frames
 ```
 
-## Strict Batch Replay (Episode 2-21)
+## Batch Replay for Episode 2-21 (Current Mod1 Runner)
 
-Use the batch wrapper to enforce stop guards and resume state:
+Primary batch wrapper:
+
+- `scripts/run_replay_episodes_2_21_mod1_batched.sh`
+
+Key defaults in that script:
+
+- `REVIEW_SHEET_NAME=sheet4_qwen3_5_mod1_MissionEngine_Review`
+- `WINDOW_SOURCE=manifest`
+- `BATCH_SIZE=10`
+- `STOP_ON_CUDA=1`
+- `AUTO_SKIP_COMPLETED=1`
+
+For self-contained reruns (recommended in current campaigns), override to frames and explicit sheet name.
+
+### Sheet 3 batch rerun (recommended)
 
 ```bash
-SOURCE_MANIFEST=/home/mark/dabtroll/data/logs/replay_episodes_2_21_strict_bad_manifest_<RUN_TAG>.txt \
-RESUME_SKIP_SUCCESSES=0 \
-MAX_CONSEC_FAILS=2 \
-MAX_TOTAL_FAILS=10 \
-MAX_CONSEC_CUDA_FAILS=1 \
-MIN_RESPONSE_OK_RATIO=1.0 \
-MISSION_TIMEOUT_MS=8000 \
-/home/mark/dabtroll/scripts/run_replay_episodes_2_21_all_runs.sh
+REVIEW_SHEET_NAME=sheet3_qwen3_5_MissionEngine_Review \
+WINDOW_SOURCE=frames \
+BATCH_SIZE=20 \
+STOP_ON_CUDA=1 \
+MISSION_TIMEOUT_MS=30000 \
+AUTO_SKIP_COMPLETED=0 \
+EPISODE_MANIFEST=/home/mark/dabtroll/data/logs/<manifest>.txt \
+/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh <RUN_TAG>
 ```
 
-Important batch behavior:
-- writes run-scoped reports (`run_report`, `error_report`, `pending_manifest`);
-- maintains persistent resume state in `data/logs/replay_episodes_2_21_resume_state.jsonl`;
-- marks soft failures when mission responses show low `response_ok` ratio or CUDA/error signatures;
-- stops early when thresholds are reached.
+### Sheet 4 batch rerun (mod1)
 
-Key environment variables:
-- `RESUME_SKIP_SUCCESSES`: skip episodes previously marked `ok=true` in state file.
-- `MAX_CONSEC_FAILS`: stop after N consecutive failures.
-- `MAX_TOTAL_FAILS`: stop after N total failures.
-- `MAX_CONSEC_CUDA_FAILS`: stop after N consecutive CUDA-tagged failures.
-- `MIN_RESPONSE_OK_RATIO`: minimum acceptable response_ok ratio for soft-pass.
-- `MISSION_TIMEOUT_MS`: per-request timeout passed to replay.
+```bash
+REVIEW_SHEET_NAME=sheet4_qwen3_5_mod1_MissionEngine_Review \
+WINDOW_SOURCE=frames \
+BATCH_SIZE=20 \
+STOP_ON_CUDA=1 \
+MISSION_TIMEOUT_MS=30000 \
+AUTO_SKIP_COMPLETED=0 \
+EPISODE_MANIFEST=/home/mark/dabtroll/data/logs/<manifest>.txt \
+/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh <RUN_TAG>
+```
 
-## Variables and Behavior
+## Resume Workflow (Checkpoint Safe)
 
-### Connection
-- `--mission-host`:
-  Mission-engine server host. Default `127.0.0.1`.
-- `--mission-port`:
-  Mission-engine server port. Default `5560`.
-- `--mission-timeout-ms`:
-  Timeout per request in milliseconds. Default `120000`.
+Each batch run writes:
 
-### Episode Selection
-- `--episode-dir`:
-  Episode directory to replay. Repeat the flag to process multiple episodes.
+- run root under `data/logs/replay_episodes_2_21_mod1_runs/<RUN_TAG>/`
+- `pending_current.txt`
+- `run_summary.txt`
+- per-batch reports in `batch_*/`
 
-### Timing and Window Control
-By default, replay uses timing from `episode_summary.json`:
-- `status_eval_every_n_steps`
-- `status_eval_seconds_target`
-- `status_window_frames`
-- `status_window_seconds_target`
-- `outer_step_seconds`
+To resume after CUDA stop, point `EPISODE_MANIFEST` to the latest `pending_current.txt`:
 
-Optional overrides:
-- `--status-eval-seconds <float>`:
-  Override eval cadence target in seconds.
-- `--status-window-seconds <float>`:
-  Override window duration target in seconds.
-- `--status-window-frames <int>`:
-  Force explicit frame count for window filtering.
+```bash
+PREV_RUN=/home/mark/dabtroll/data/logs/replay_episodes_2_21_mod1_runs/<PREV_RUN_TAG>
+PENDING="$PREV_RUN/pending_current.txt"
+
+RUN_TAG=sheet3_rerun_resume_$(date -u +%Y%m%dT%H%M%SZ)
+REVIEW_SHEET_NAME=sheet3_qwen3_5_MissionEngine_Review \
+WINDOW_SOURCE=frames \
+BATCH_SIZE=20 \
+STOP_ON_CUDA=1 \
+MISSION_TIMEOUT_MS=30000 \
+EPISODE_MANIFEST="$PENDING" \
+AUTO_SKIP_COMPLETED=0 \
+/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh "$RUN_TAG"
+```
+
+## CLI Options (`replay_qwen35_bt_eval.py`)
+
+Connection:
+
+- `--mission-host` (default `127.0.0.1`)
+- `--mission-port` (default `5560`)
+- `--mission-timeout-ms` (default `120000`)
+
+Episode selection:
+
+- `--episode-dir` (repeatable)
+
+Window/timing:
+
+- `--window-source {frames,manifest}` (default `frames`)
+- `--status-eval-seconds`
+- `--status-window-seconds`
+- `--status-window-frames`
+
+Prompt behavior:
+
+- `--use-manifest-prompts` (opt-in)
+- `--ignore-manifest-prompts` (forces BT-derived prompts in manifest mode)
+
+Sheet target:
+
+- `--review-sheet-name` (default `sheet3_qwen3_5_MissionEngine_Review`)
+
+## Quality and Error Semantics
+
+Replay computes and returns per-episode metrics such as:
+
+- `mission_response_rows`
+- `mission_response_ok_rows`
+- `mission_response_error_rows`
+- `mission_cuda_error_rows`
+- `mission_response_ok_ratio`
+- `mission_has_errors`
+- `mission_error_reason`
+
+When mission errors are present, replay still writes JSONL outputs, but does not write/update the review sheet for that episode.
+
+## Legacy Strict Runner (Still Available)
+
+Legacy strict runner:
+
+- `scripts/run_replay_episodes_2_21_all_runs.sh`
+
+This still supports threshold-driven stopping with persistent state (`replay_episodes_2_21_resume_state.jsonl`), but current sheet3/sheet4 campaigns primarily use `run_replay_episodes_2_21_mod1_batched.sh`.
+
+## Audit Script
+
+Audit helper:
+
+- `scripts/audit_qwen35_sheet3_quality.py`
 
 Notes:
-- Replay filters manifest rows to keep simulation-timed checks (cadence + terminal check).
-- It does not regenerate frame windows from scratch.
 
-### Window Source and Prompt Source
-- Default window source: `--window-source frames`
-  - Rebuilds status-eval windows from `frames/frame_*.jpg` starting near the beginning (for example 0:02 with 2-second cadence).
-  - Prompts are generated with `status_eval_text` from BT metadata.
-- Optional manifest source: `--window-source manifest`
-  - Uses historical `status_window_manifest.jsonl` rows.
-  - Reuses `prompt_text` from manifest rows when present.
-- `--ignore-manifest-prompts`:
-  - Only relevant for `--window-source manifest`.
-  - Forces prompt regeneration from BT metadata.
-
-## Keep It Aligned With Simulation (Recommended)
-
-Use defaults (no timing overrides) when your goal is exact simulation-timeframe replay.
-
-This ensures replay stays aligned with how DABTROLL originally generated status checks, instead of introducing new scheduling logic.
-
-## Example for Your Current 2s/4s Setup
-
-If your episode summary has:
-- `status_eval_seconds_target = 2.0`
-- `status_window_seconds_target = 4.0`
-- `outer_step_seconds = 0.4`
-
-Then replay uses 5-step cadence and 8-frame windows (same as simulation output).
+- It audits `sheet3_qwen3_5_MissionEngine_Review` plus latest `qwen_3_5_*` output quality.
+- It is sheet3-focused by design.
 
 ## Troubleshooting
 
-- No output rows created:
-  Check that source `status_window_manifest.jsonl` has rows and frame files exist.
-- Timeouts from mission engine:
-  Increase `--mission-timeout-ms` or verify server health.
-- Missing Sheet 3:
-  Ensure `human_rater_evaluation.xlsx` exists in each episode directory.
-- Node progression seems stuck:
-  Replay now advances node state using `BehaviorTreeRunner` updates from model status (`complete`/`failure`).
-
-## Robust Quality Audit and Manifest Generation
-
-Run audit on all eligible episode 2-21 directories:
-
-```bash
-python scripts/audit_qwen35_sheet3_quality.py \
-  --logs-root /home/mark/dabtroll/data/logs \
-  --min-response-ok-ratio 1.0 \
-  --audit-json-out /home/mark/dabtroll/data/logs/replay_episodes_2_21_quality_audit_<RUN_TAG>.json \
-  --keep-manifest-out /home/mark/dabtroll/data/logs/replay_episodes_2_21_keep_manifest_<RUN_TAG>.txt \
-  --rerun-manifest-out /home/mark/dabtroll/data/logs/replay_episodes_2_21_rerun_manifest_<RUN_TAG>.txt
-```
-
-Run audit limited to replay state entries:
-
-```bash
-python scripts/audit_qwen35_sheet3_quality.py \
-  --state-jsonl /home/mark/dabtroll/data/logs/replay_episodes_2_21_resume_state.jsonl \
-  --state-only-ok \
-  --min-response-ok-ratio 1.0
-```
+- Frequent CUDA failures in batch runs:
+  Keep `STOP_ON_CUDA=1`, resume from latest `pending_current.txt`, and continue in short cycles.
+- Replay writes outputs but no review sheet:
+  Check `mission_has_errors` and `mission_error_reason` in replay JSON output.
+- Frame-source run finds no windows:
+  Verify episode contains `frames/**/frame_*.jpg`.
+- Manifest-source run fails:
+  Verify `status_window_manifest.jsonl` exists for each target episode.
 
 ## Related Files
 
 - Replay script: `scripts/replay_qwen35_bt_eval.py`
-- Batch strict replay: `scripts/run_replay_episodes_2_21_all_runs.sh`
+- Batch mod1 runner: `scripts/run_replay_episodes_2_21_mod1_batched.sh`
+- Legacy strict runner: `scripts/run_replay_episodes_2_21_all_runs.sh`
 - Quality audit: `scripts/audit_qwen35_sheet3_quality.py`
-- Live pipeline (source of timing semantics): `scripts/dabtroll_bt_pipeline.py`
+- Live pipeline timing source: `scripts/dabtroll_bt_pipeline.py`
 - Simulation entrypoint: `scripts/simulation.py`
 - Mission server docs: `docs/mission_engine_server.md`

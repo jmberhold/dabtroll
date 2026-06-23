@@ -2,9 +2,12 @@ from __future__ import annotations
 
 """Replay mission-engine status evaluation on existing episode frames using Qwen3.5.
 
-This script does NOT run simulation. It reuses:
+This script does NOT run simulation. By default it builds its own replay windows
+from episode frame files and iterates its own BT state transitions. It reuses:
 - existing BT (`bt.json`)
-- existing frame windows (`status_window_manifest.jsonl`)
+- existing episode frames (`frames/**/frame_*.jpg`)
+
+Optional legacy mode can reuse `status_window_manifest.jsonl` timing rows.
 
 For each episode, it creates a subfolder:
   qwen_3_5_<timestamp>/
@@ -21,6 +24,7 @@ import argparse
 import base64
 import io
 import json
+import re
 import time
 import warnings
 from pathlib import Path
@@ -50,6 +54,7 @@ HEADER_FILL = PatternFill(fill_type="solid", fgColor="DDEBF7")
 TITLE_FILL = PatternFill(fill_type="solid", fgColor="E2F0D9")
 THIN = Side(border_style="thin", color="BFBFBF")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+CUDA_ERROR_RE = re.compile(r"(cuda|unspecified launch failure|cudaerrorlaunchfailure|cublas|device-side assert)", re.IGNORECASE)
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -71,6 +76,20 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
         if isinstance(obj, dict):
             rows.append(obj)
     return rows
+
+
+def _load_success_by_step(episode_dir: Path) -> Dict[int, Any]:
+    states_path = episode_dir / "states_per_frame.jsonl"
+    out: Dict[int, Any] = {}
+    if not states_path.exists():
+        return out
+    for row in _read_jsonl(states_path):
+        step = row.get("step")
+        if not isinstance(step, int):
+            continue
+        if "success" in row:
+            out[step] = row.get("success")
+    return out
 
 
 def _write_jsonl(path: Path, rows: Iterable[Dict[str, Any]]) -> None:
@@ -349,11 +368,18 @@ def _build_manifest_rows_from_frames(
     if not frame_dir.exists():
         return []
 
-    indexed_paths: List[Tuple[int, Path]] = []
-    for p in sorted(frame_dir.glob("frame_*.jpg")):
+    indexed_paths_by_parent: Dict[Path, List[Tuple[int, Path]]] = {}
+    for p in sorted(frame_dir.rglob("frame_*.jpg")):
         idx = _frame_index_from_path(p)
-        if idx is not None:
-            indexed_paths.append((idx, p))
+        if idx is None:
+            continue
+        indexed_paths_by_parent.setdefault(p.parent, []).append((idx, p))
+    indexed_paths: List[Tuple[int, Path]] = []
+    if indexed_paths_by_parent:
+        indexed_paths = max(
+            indexed_paths_by_parent.values(),
+            key=lambda rows: (len(rows), str(rows[0][1].parent) if rows else ""),
+        )
     if not indexed_paths:
         return []
 
@@ -367,7 +393,8 @@ def _build_manifest_rows_from_frames(
     path_by_step = {idx: p for idx, p in indexed_paths}
     rows: List[Dict[str, Any]] = []
 
-    step = max(1, int(eval_every_steps))
+    step_increment = max(1, int(eval_every_steps))
+    step = 0
     while step <= step_limit:
         start = max(0, step - int(window_frames) + 1)
         window_paths: List[str] = []
@@ -387,7 +414,7 @@ def _build_manifest_rows_from_frames(
                     "prompt_text": "",
                 }
             )
-        step += max(1, int(eval_every_steps))
+        step += step_increment
 
     if step_limit not in {row.get("step") for row in rows}:
         start = max(0, int(step_limit) - int(window_frames) + 1)
@@ -428,10 +455,6 @@ def _filter_manifest_for_simulation_timing(
         if not isinstance(step, int):
             continue
 
-        frame_count = len(row.get("frames", [])) if isinstance(row.get("frames"), list) else 0
-        if frame_count < expected_window_frames:
-            continue
-
         if first_step is None:
             at_expected_cadence = True
         else:
@@ -470,6 +493,7 @@ def _build_mission_milestones(
     btstatus_rows: List[Dict[str, Any]],
     outer_step_seconds: float,
     video_time_scale: Optional[float],
+    success_by_step: Optional[Dict[int, Any]] = None,
 ) -> List[Dict[str, Any]]:
     milestones: List[Dict[str, Any]] = []
 
@@ -512,6 +536,10 @@ def _build_mission_milestones(
                 else:
                     model_notes = "empty response"
 
+        sim_success = ""
+        if success_by_step is not None and step is not None and step in success_by_step:
+            sim_success = str(success_by_step.get(step))
+
         milestones.append(
             {
                 "sort_step": step if step is not None else 10**9,
@@ -528,6 +556,7 @@ def _build_mission_milestones(
                 "model_progress": model_progress,
                 "model_notes": model_notes,
                 "model_latency_s": response.get("latency_s", row.get("response_latency_s", "")),
+                "sim_success": sim_success,
             }
         )
 
@@ -536,6 +565,10 @@ def _build_mission_milestones(
         if status != "complete":
             continue
         step = row.get("step") if isinstance(row.get("step"), int) else None
+        sim_success = ""
+        if success_by_step is not None and step is not None and step in success_by_step:
+            sim_success = str(success_by_step.get(step))
+
         milestones.append(
             {
                 "sort_step": step if step is not None else 10**9,
@@ -552,6 +585,7 @@ def _build_mission_milestones(
                 "model_progress": str(row.get("progress_score", "") or ""),
                 "model_notes": str(row.get("notes", "") or ""),
                 "model_latency_s": "",
+                "sim_success": sim_success,
             }
         )
 
@@ -559,7 +593,68 @@ def _build_mission_milestones(
     return milestones
 
 
-def _write_sheet3(workbook_path: Path, summary: Dict[str, Any], milestones: List[Dict[str, Any]], bt_svg_path: Path) -> None:
+def _summarize_mission_response_quality(mission_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = 0
+    ok = 0
+    error = 0
+    cuda = 0
+    empty_text = 0
+
+    for row in mission_rows:
+        if str(row.get("direction", "") or "") != "response":
+            continue
+        request_kind = str(row.get("request_kind", "") or "")
+        if "status_eval" not in request_kind:
+            continue
+
+        total += 1
+        response_ok = bool(row.get("response_ok", False))
+        response_error = str(row.get("response_error", "") or "")
+        response_text = str(row.get("response_text", "") or "")
+        response_blob = row.get("response") if isinstance(row.get("response"), dict) else {}
+        response_error_blob = str(response_blob.get("error", "") or "")
+
+        if response_ok:
+            ok += 1
+        else:
+            error += 1
+            if not response_text.strip():
+                empty_text += 1
+
+        if CUDA_ERROR_RE.search("\n".join([response_error, response_error_blob, response_text])):
+            cuda += 1
+
+    ok_ratio = float(ok) / float(total) if total > 0 else 0.0
+    reasons: List[str] = []
+    if total == 0:
+        reasons.append("no_mission_responses")
+    if error > 0:
+        reasons.append(f"mission_error_rows={error}")
+    if cuda > 0:
+        reasons.append(f"mission_cuda_rows={cuda}")
+    if empty_text > 0:
+        reasons.append(f"mission_empty_text_rows={empty_text}")
+
+    has_errors = len(reasons) > 0
+    return {
+        "mission_response_rows": total,
+        "mission_response_ok_rows": ok,
+        "mission_response_error_rows": error,
+        "mission_cuda_error_rows": cuda,
+        "mission_empty_text_rows": empty_text,
+        "mission_response_ok_ratio": ok_ratio,
+        "mission_has_errors": has_errors,
+        "mission_error_reason": "clean_mission_responses" if not has_errors else ",".join(reasons),
+    }
+
+
+def _write_review_sheet(
+    workbook_path: Path,
+    summary: Dict[str, Any],
+    milestones: List[Dict[str, Any]],
+    bt_svg_path: Path,
+    sheet_name: str,
+) -> None:
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -567,7 +662,6 @@ def _write_sheet3(workbook_path: Path, summary: Dict[str, Any], milestones: List
             category=UserWarning,
         )
         wb = load_workbook(workbook_path)
-    sheet_name = "sheet3_qwen3_5_MissionEngine_Review"
     if sheet_name in wb.sheetnames:
         del wb[sheet_name]
 
@@ -579,8 +673,8 @@ def _write_sheet3(workbook_path: Path, summary: Dict[str, Any], milestones: List
         )
         ws = wb.create_sheet(sheet_name)
 
-    ws.merge_cells("A1:S1")
-    ws["A1"] = "Human Review Sheet 3: Qwen3.5 Mission Engine Response and Milestone Agreement"
+    ws.merge_cells("A1:T1")
+    ws["A1"] = f"Human Review: {sheet_name}"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A1"].fill = TITLE_FILL
 
@@ -589,16 +683,16 @@ def _write_sheet3(workbook_path: Path, summary: Dict[str, Any], milestones: List
         "frame_00000. For each row, judge whether qwen3.5 mission-engine assessment is correct, enter reviewer time/frame "
         "if different, and explain disagreement."
     )
-    ws.merge_cells("A2:S4")
+    ws.merge_cells("A2:T4")
     ws["A2"] = instructions
     ws["A2"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
-    ws.merge_cells("A5:S5")
+    ws.merge_cells("A5:T5")
     ws["A5"] = f"BT SVG (open externally): {bt_svg_path}"
     ws["A5"].hyperlink = bt_svg_path.as_uri() if bt_svg_path.exists() else None
     ws["A5"].font = Font(color="0563C1", underline="single") if bt_svg_path.exists() else Font(bold=True)
 
-    ws.merge_cells("A6:S6")
+    ws.merge_cells("A6:T6")
     ws["A6"] = (
         f"Episode: {summary.get('episode_id', '')} | Mission: {summary.get('mission_name', '')} | "
         f"Model: Qwen/Qwen3.5-9B"
@@ -615,6 +709,7 @@ def _write_sheet3(workbook_path: Path, summary: Dict[str, Any], milestones: List
         "machine_time_m:ss",
         "video_time_m:ss",
         "model_status",
+        "sim_success",
         "model_progress",
         "model_notes",
         "model_latency_s",
@@ -643,9 +738,10 @@ def _write_sheet3(workbook_path: Path, summary: Dict[str, Any], milestones: List
         ws.cell(row=row_idx, column=8, value=m.get("time", ""))
         ws.cell(row=row_idx, column=9, value=m.get("video_time", ""))
         ws.cell(row=row_idx, column=10, value=m.get("model_status", ""))
-        ws.cell(row=row_idx, column=11, value=m.get("model_progress", ""))
-        ws.cell(row=row_idx, column=12, value=m.get("model_notes", ""))
-        ws.cell(row=row_idx, column=13, value=m.get("model_latency_s", ""))
+        ws.cell(row=row_idx, column=11, value=m.get("sim_success", ""))
+        ws.cell(row=row_idx, column=12, value=m.get("model_progress", ""))
+        ws.cell(row=row_idx, column=13, value=m.get("model_notes", ""))
+        ws.cell(row=row_idx, column=14, value=m.get("model_latency_s", ""))
         row_idx += 1
 
     data_end = max(header_row + 1, row_idx - 1)
@@ -662,15 +758,16 @@ def _write_sheet3(workbook_path: Path, summary: Dict[str, Any], milestones: List
         8: 18,
         9: 16,
         10: 16,
-        11: 14,
-        12: 42,
-        13: 14,
-        14: 24,
-        15: 20,
-        16: 18,
+        11: 12,
+        12: 14,
+        13: 42,
+        14: 14,
+        15: 24,
+        16: 20,
         17: 18,
-        18: 40,
-        19: 34,
+        18: 18,
+        19: 40,
+        20: 34,
     }
     for col, w in widths.items():
         ws.column_dimensions[chr(64 + col)].width = w
@@ -690,15 +787,17 @@ def _replay_episode(
     status_window_frames_override: Optional[int],
     use_manifest_prompts: bool,
     window_source: str,
+    review_sheet_name: str,
 ) -> Dict[str, Any]:
     summary_path = episode_dir / "episode_summary.json"
     bt_path = episode_dir / "bt.json"
     manifest_path = episode_dir / "status_window_manifest.jsonl"
     workbook_path = episode_dir / "human_rater_evaluation.xlsx"
+    use_manifest_rows = str(window_source).strip().lower() == "manifest"
 
-    if not summary_path.exists() or not bt_path.exists() or not manifest_path.exists() or not workbook_path.exists():
+    if not summary_path.exists() or not bt_path.exists() or not workbook_path.exists() or (use_manifest_rows and not manifest_path.exists()):
         raise FileNotFoundError(
-            f"Episode missing required files in {episode_dir}: episode_summary.json, bt.json, status_window_manifest.jsonl, human_rater_evaluation.xlsx"
+            f"Episode missing required files in {episode_dir}: episode_summary.json, bt.json, human_rater_evaluation.xlsx"
         )
 
     summary = _read_json(summary_path)
@@ -708,8 +807,15 @@ def _replay_episode(
     runner = BehaviorTreeRunner(bt_json if isinstance(bt_json, dict) else {"root": {}}, mission_name=str(summary.get("mission_name", "")))
     runner.reset()
 
-    input_manifest_rows = _read_jsonl(manifest_path)
-    input_manifest_rows.sort(key=lambda r: (int(r.get("step", 10**9)) if isinstance(r.get("step"), int) else 10**9, float(r.get("ts", 0.0)) if isinstance(r.get("ts"), (int, float)) else 0.0))
+    input_manifest_rows: List[Dict[str, Any]] = []
+    if use_manifest_rows:
+        input_manifest_rows = _read_jsonl(manifest_path)
+        input_manifest_rows.sort(
+            key=lambda r: (
+                int(r.get("step", 10**9)) if isinstance(r.get("step"), int) else 10**9,
+                float(r.get("ts", 0.0)) if isinstance(r.get("ts"), (int, float)) else 0.0,
+            )
+        )
 
     expected_eval_every_steps, expected_window_frames = _derive_timing_from_summary(
         summary=summary,
@@ -718,7 +824,7 @@ def _replay_episode(
         status_window_frames_override=status_window_frames_override,
     )
     final_step = int(summary.get("steps_executed", 0) or 0) - 1
-    if str(window_source).strip().lower() == "frames":
+    if not use_manifest_rows:
         generated_rows = _build_manifest_rows_from_frames(
             episode_dir=episode_dir,
             episode_id=str(summary.get("episode_id", "") or ""),
@@ -726,8 +832,11 @@ def _replay_episode(
             window_frames=expected_window_frames,
             final_step=final_step if final_step >= 0 else None,
         )
-        if generated_rows:
-            input_manifest_rows = generated_rows
+        if not generated_rows:
+            raise FileNotFoundError(
+                f"No replay frame windows could be built for {episode_dir}. Expected frames under frames/**/frame_*.jpg"
+            )
+        input_manifest_rows = generated_rows
     else:
         input_manifest_rows = _filter_manifest_for_simulation_timing(
             manifest_rows=input_manifest_rows,
@@ -748,16 +857,26 @@ def _replay_episode(
     replay_mission_rows: List[Dict[str, Any]] = []
     replay_trace_rows: List[Dict[str, Any]] = []
     btstatus_complete_rows: List[Dict[str, Any]] = []
+    last_active_node: Optional[Dict[str, Any]] = None
+    bt_terminal_state: str = ""
 
     for item in input_manifest_rows:
         bt_state, active_node = runner.tick()
-        if bt_state in {"complete", "failure"} or not isinstance(active_node, dict):
+        if isinstance(active_node, dict):
+            last_active_node = active_node
+        elif not bt_terminal_state:
+            # BT just reached terminal state — record it but continue processing
+            # remaining manifest rows using the last known active node.
+            bt_terminal_state = bt_state
+        if last_active_node is None:
+            # No node has ever been active (e.g. empty BT); nothing to evaluate.
             break
 
+        active_node = last_active_node
         step = int(item.get("step", 0) or 0)
         node_id = str(active_node.get("id", "") or "")
         node_type = str(active_node.get("type", "") or "")
-        status_eval_id = str(item.get("status_eval_id", "") or f"qwen35:{summary.get('episode_id','')}:step_{step}:{node_id}")
+        status_eval_id = f"qwen35:{summary.get('episode_id','')}:step_{step}:node_{node_id}"
         frames = [str(p) for p in item.get("frames", []) if str(p)]
         frame_paths = [Path(p) for p in frames if Path(p).exists()]
         if not frame_paths:
@@ -802,8 +921,12 @@ def _replay_episode(
 
         response = client.request(request_payload, retries=0)
         resp_ts = time.time()
+        response_ok = bool(response.get("ok")) if isinstance(response, dict) else False
         response_text = str(response.get("text", "") or "") if isinstance(response, dict) else ""
         parsed = _parse_status_json(response_text)
+        parsed_status = str(parsed.get("status", "") or "")
+        parsed_status_std = parsed_status.strip().lower()
+        valid_status = parsed_status_std if response_ok and parsed_status_std in {"running", "complete", "failure"} else ""
 
         resp_row = {
             "ts": resp_ts,
@@ -819,7 +942,7 @@ def _replay_episode(
             "node_type": node_type,
             "status_eval_id": status_eval_id,
             "response": response if isinstance(response, dict) else {"ok": False, "error": "non_dict_response"},
-            "response_ok": bool(response.get("ok")) if isinstance(response, dict) else False,
+            "response_ok": response_ok,
             "response_latency_s": response.get("latency_s", "") if isinstance(response, dict) else "",
             "response_error": response.get("error") if isinstance(response, dict) else "non_dict_response",
             "response_text": response_text,
@@ -831,13 +954,14 @@ def _replay_episode(
         out_manifest["qwen35_ts"] = resp_ts
         out_manifest["qwen35_status_eval_id"] = status_eval_id
         out_manifest["qwen35_response_text"] = response_text
-        out_manifest["qwen35_response_ok"] = bool(response.get("ok")) if isinstance(response, dict) else False
-        out_manifest["qwen35_status"] = str(parsed.get("status", "") or "")
+        out_manifest["qwen35_response_ok"] = response_ok
+        out_manifest["qwen35_status"] = valid_status
+        out_manifest["qwen35_status_raw"] = parsed_status
         out_manifest["qwen35_progress_score"] = parsed.get("progress_score", parsed.get("progress", ""))
         out_manifest["qwen35_notes"] = str(parsed.get("notes", "") or "")
         replay_manifest_rows.append(out_manifest)
 
-        status = str(parsed.get("status", "") or "")
+        status = valid_status
         progress = parsed.get("progress_score", parsed.get("progress", ""))
         notes = str(parsed.get("notes", "") or "")
         trace_event = {
@@ -849,17 +973,19 @@ def _replay_episode(
             "node_id": node_id,
             "node_type": node_type,
             "status": status,
-            "status_label_std": status.strip().lower(),
+            "status_label_std": status,
+            "bt_state_at_step": bt_terminal_state if bt_terminal_state else bt_state,
             "vlm_confidence": 1.0,
             "notes": notes,
             "progress_score": progress,
             "criteria_met": parsed.get("criteria_met", []) if isinstance(parsed.get("criteria_met", []), list) else [],
             "criteria_missing": parsed.get("criteria_missing", []) if isinstance(parsed.get("criteria_missing", []), list) else [],
             "qwen_model": "Qwen/Qwen3.5-9B",
+            "response_ok": response_ok,
         }
         replay_trace_rows.append(trace_event)
 
-        if status.strip().lower() == "complete":
+        if status == "complete":
             btstatus_complete_rows.append(
                 {
                     "ts": resp_ts,
@@ -874,8 +1000,9 @@ def _replay_episode(
                 }
             )
 
-        if status.strip().lower() in {"complete", "failure"}:
-            runner.set_status(active_node, {"status": status.strip().lower()})
+        # Only advance the BT runner when it is not already at a terminal state.
+        if not bt_terminal_state and status in {"complete", "failure"}:
+            runner.set_status(active_node, {"status": status})
 
     _write_jsonl(out_manifest_path, replay_manifest_rows)
     _write_jsonl(out_mission_path, replay_mission_rows)
@@ -897,19 +1024,25 @@ def _replay_episode(
         btstatus_rows=btstatus_complete_rows,
         outer_step_seconds=outer_step_seconds,
         video_time_scale=video_time_scale,
+        success_by_step=_load_success_by_step(episode_dir),
     )
-    _write_sheet3(
-        workbook_path=workbook_path,
-        summary=summary,
-        milestones=milestones,
-        bt_svg_path=episode_dir / "bt.svg",
-    )
-
-    sheet2_video_times_filled = _backfill_sheet2_video_times(
-        workbook_path=workbook_path,
-        outer_step_seconds=outer_step_seconds,
-        video_time_scale=video_time_scale,
-    )
+    quality = _summarize_mission_response_quality(replay_mission_rows)
+    review_sheet_written = False
+    sheet2_video_times_filled = 0
+    if not bool(quality.get("mission_has_errors", False)):
+        _write_review_sheet(
+            workbook_path=workbook_path,
+            summary=summary,
+            milestones=milestones,
+            bt_svg_path=episode_dir / "bt.svg",
+            sheet_name=review_sheet_name,
+        )
+        review_sheet_written = True
+        sheet2_video_times_filled = _backfill_sheet2_video_times(
+            workbook_path=workbook_path,
+            outer_step_seconds=outer_step_seconds,
+            video_time_scale=video_time_scale,
+        )
 
     return {
         "episode_dir": str(episode_dir),
@@ -920,8 +1053,19 @@ def _replay_episode(
         "manifest_rows": len(replay_manifest_rows),
         "mission_rows": len(replay_mission_rows),
         "trace_rows": len(replay_trace_rows),
+        "review_sheet_name": review_sheet_name,
+        "review_sheet_written": bool(review_sheet_written),
+        "review_sheet_path": str(workbook_path) if review_sheet_written else "",
         "sheet2_video_times_filled": int(sheet2_video_times_filled),
-        "sheet3_added": str(workbook_path),
+        "sheet3_added": str(workbook_path) if review_sheet_written and review_sheet_name == "sheet3_qwen3_5_MissionEngine_Review" else "",
+        "mission_response_rows": int(quality.get("mission_response_rows", 0)),
+        "mission_response_ok_rows": int(quality.get("mission_response_ok_rows", 0)),
+        "mission_response_error_rows": int(quality.get("mission_response_error_rows", 0)),
+        "mission_cuda_error_rows": int(quality.get("mission_cuda_error_rows", 0)),
+        "mission_empty_text_rows": int(quality.get("mission_empty_text_rows", 0)),
+        "mission_response_ok_ratio": float(quality.get("mission_response_ok_ratio", 0.0)),
+        "mission_has_errors": bool(quality.get("mission_has_errors", False)),
+        "mission_error_reason": str(quality.get("mission_error_reason", "")),
     }
 
 
@@ -955,10 +1099,20 @@ def _parse_args() -> argparse.Namespace:
         help="Rebuild prompts from BT metadata instead of reusing prompt_text from status_window_manifest.",
     )
     ap.add_argument(
+        "--use-manifest-prompts",
+        action="store_true",
+        help="Reuse prompt_text from status_window_manifest when present. Default is BT-derived prompts.",
+    )
+    ap.add_argument(
         "--window-source",
         choices=["frames", "manifest"],
         default="frames",
         help="Use full frames directory (frames, default) or status_window_manifest timing rows (manifest).",
+    )
+    ap.add_argument(
+        "--review-sheet-name",
+        default="sheet3_qwen3_5_MissionEngine_Review",
+        help="Workbook sheet name to write when replay responses are clean.",
     )
     return ap.parse_args()
 
@@ -982,8 +1136,9 @@ def main() -> None:
                 status_eval_seconds_override=args.status_eval_seconds,
                 status_window_seconds_override=args.status_window_seconds,
                 status_window_frames_override=args.status_window_frames,
-                use_manifest_prompts=not bool(args.ignore_manifest_prompts),
+                use_manifest_prompts=bool(args.use_manifest_prompts) and not bool(args.ignore_manifest_prompts),
                 window_source=str(args.window_source),
+                review_sheet_name=str(args.review_sheet_name),
             )
         )
 

@@ -20,7 +20,9 @@ Primary goals:
 
 Core scripts for Contribution 1:
 - `scripts/simulation.py` (`--mode dabtroll --test btaudit`)
+- `scripts/dabtroll_bt_pipeline.py` (runtime cadence and status-window source of truth)
 - `scripts/replay_qwen35_bt_eval.py` (single/multi-episode replay)
+- `scripts/run_replay_episodes_2_21_mod1_batched.sh` (current sheet3/sheet4 batch replay + resume path)
 - `scripts/run_replay_episodes_2_21_all_runs.sh` (batch replay with stop guards and resume)
 - `scripts/audit_qwen35_sheet3_quality.py` (robust keep/rerun audit)
 - `docs/replay_qwen35_eval_readme.md` (detailed replay and quality workflow)
@@ -232,6 +234,36 @@ MISSION_TIMEOUT_MS=8000 \
 /home/mark/dabtroll/scripts/run_replay_episodes_2_21_all_runs.sh
 ```
 
+Run current mod1 batch replay (sheet3/sheet4, frame-source recommended):
+
+```bash
+REVIEW_SHEET_NAME=sheet3_qwen3_5_MissionEngine_Review \
+WINDOW_SOURCE=frames \
+BATCH_SIZE=20 \
+STOP_ON_CUDA=1 \
+MISSION_TIMEOUT_MS=30000 \
+AUTO_SKIP_COMPLETED=0 \
+EPISODE_MANIFEST=/home/mark/dabtroll/data/logs/<manifest>.txt \
+/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh <RUN_TAG>
+```
+
+Resume from a previous mod1 batch stop point:
+
+```bash
+PREV_RUN=/home/mark/dabtroll/data/logs/replay_episodes_2_21_mod1_runs/<PREV_RUN_TAG>
+PENDING="$PREV_RUN/pending_current.txt"
+RUN_TAG=sheet3_rerun_resume_$(date -u +%Y%m%dT%H%M%SZ)
+
+REVIEW_SHEET_NAME=sheet3_qwen3_5_MissionEngine_Review \
+WINDOW_SOURCE=frames \
+BATCH_SIZE=20 \
+STOP_ON_CUDA=1 \
+MISSION_TIMEOUT_MS=30000 \
+EPISODE_MANIFEST="$PENDING" \
+AUTO_SKIP_COMPLETED=0 \
+/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh "$RUN_TAG"
+```
+
 Audit latest replay quality and split keep/rerun manifests:
 
 ```bash
@@ -339,5 +371,5 @@ Use this flow when publishing Contribution 1 updates to GitHub:
 Suggested staging command for current work:
 
 ```bash
-git add README.md docs/*.md scripts/*.py scripts/*.sh notebooks/DABTROLL_Audit_Visualization_Planning_Notebook.ipynb
+git add README.md docs/*.md scripts/*.py scripts/*.sh notebooks/DABTROLL_Audit_Visualization_Planning_Notebook.ipynb notebooks/VIBTARVE_Visualization.ipynb notebooks/VIBTARVE_Progress.ipynb
 ```

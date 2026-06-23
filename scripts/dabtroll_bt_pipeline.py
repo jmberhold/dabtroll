@@ -28,7 +28,7 @@ import zmq
 from PIL import Image
 
 from dabtroll_bt_planner import parse_json_from_text
-from knowledge_base import KnowledgeBase, init_kb
+from knowledge_base import KnowledgeBase, find_project_root, init_kb
 from mission_engine import BehaviorTreeRunner, bt_to_graphviz
 from prompts import bt_wait_text, default_high_level_task_text, preflight_probe_text, status_eval_text
 from task_engine import (
@@ -92,6 +92,16 @@ def _normalized_test_name(value: Optional[str]) -> str:
 def _is_test_enabled(config: PipelineConfig, name: str) -> bool:
     """Check whether a named test mode is active for this run."""
     return _normalized_test_name(config.test) == str(name).strip().lower()
+
+
+def _is_btaudit_like_test(config: PipelineConfig) -> bool:
+    """Return True for BT-audit variants that share baseline behavior."""
+    return _normalized_test_name(config.test) in {"btaudit", "btaudit2"}
+
+
+def _is_btaudit2_test(config: PipelineConfig) -> bool:
+    """Return True when the btaudit2 variant is active."""
+    return _is_test_enabled(config, "btaudit2")
 
 
 class MissionEngineClient:
@@ -488,6 +498,7 @@ class EpisodeRuntime:
         frame_path: Path,
         state_keys: Optional[List[str]],
         preferred_state_key: str,
+        info_summary: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Persist normalized per-frame state snapshot for later analysis."""
         snapshot = build_state_snapshot(
@@ -498,6 +509,11 @@ class EpisodeRuntime:
             state_keys=state_keys,
             preferred_state_key=preferred_state_key,
         )
+        if isinstance(info_summary, dict) and info_summary:
+            snapshot["info_summary"] = dict(info_summary)
+            for key in ["success", "task_progress", "q_score", "valid"]:
+                if key in info_summary:
+                    snapshot[key] = info_summary.get(key)
         snapshot["ts"] = time.time()
         self.kb.append_jsonl(self.states_path, snapshot)
 
@@ -505,14 +521,70 @@ class EpisodeRuntime:
         """Append one mission-engine request/response record to missionengine.jsonl."""
         self.kb.append_jsonl(self.mission_engine_log_path, event)
 
-    def save_frame(self, frame: np.ndarray, step_idx: int) -> Path:
+    @staticmethod
+    def _view_dir_name(video_key: str) -> str:
+        """Convert a flattened video observation key into a folder-safe view label."""
+        key = str(video_key or "").strip()
+        if key.startswith("video."):
+            key = key[len("video.") :]
+        key = key.replace("/", "_").replace("\\", "_").replace(" ", "_")
+        key = "".join(c if c.isalnum() or c in {"_", "-", "."} else "_" for c in key)
+        return key or "unknown_view"
+
+    def save_frame(self, frame: np.ndarray, step_idx: int, view_name: Optional[str] = None) -> Path:
         """Persist one RGB frame as JPEG under the episode frame directory."""
-        path = self.ep.frames_dir / f"frame_{step_idx:05d}.jpg"
+        if view_name:
+            view_dir = self.ep.frames_dir / str(view_name)
+            view_dir.mkdir(parents=True, exist_ok=True)
+            path = view_dir / f"frame_{step_idx:05d}.jpg"
+        else:
+            path = self.ep.frames_dir / f"frame_{step_idx:05d}.jpg"
         arr = np.asarray(frame)
         if arr.dtype != np.uint8:
             arr = np.clip(arr, 0, 255).astype(np.uint8)
         Image.fromarray(arr).save(path)
         return path
+
+    def save_obs_view_frames(
+        self,
+        obs: Dict[str, Any],
+        *,
+        step_idx: int,
+        primary_video_key: str,
+        video_keys: Optional[List[str]] = None,
+    ) -> Tuple[Path, Dict[str, str], np.ndarray]:
+        """Save one frame per available video key and return primary path/frame."""
+        frame_paths_by_view: Dict[str, str] = {}
+        primary_frame_path: Optional[Path] = None
+        primary_frame_array: Optional[np.ndarray] = None
+
+        candidate_keys = list(video_keys or [])
+        if primary_video_key not in candidate_keys:
+            candidate_keys.insert(0, primary_video_key)
+
+        for key in candidate_keys:
+            if key not in obs:
+                continue
+            arr = np.asarray(obs[key])
+            frame = arr[-1] if arr.ndim >= 4 else arr
+            view_name = self._view_dir_name(str(key))
+            frame_path = self.save_frame(frame, step_idx, view_name=view_name)
+            frame_paths_by_view[view_name] = str(frame_path)
+            if key == primary_video_key:
+                primary_frame_path = frame_path
+                primary_frame_array = np.array(frame, copy=True)
+
+        if primary_frame_path is None or primary_frame_array is None:
+            if primary_video_key not in obs:
+                raise KeyError(f"Primary video key missing from observation: {primary_video_key}")
+            arr = np.asarray(obs[primary_video_key])
+            frame = arr[-1] if arr.ndim >= 4 else arr
+            fallback_name = self._view_dir_name(str(primary_video_key))
+            primary_frame_path = self.save_frame(frame, step_idx, view_name=fallback_name)
+            frame_paths_by_view[fallback_name] = str(primary_frame_path)
+            primary_frame_array = np.array(frame, copy=True)
+
+        return primary_frame_path, frame_paths_by_view, primary_frame_array
 
 
 def _resolve_node_prompt(node: Dict[str, Any]) -> str:
@@ -544,6 +616,10 @@ def _save_start_frame(runtime: EpisodeRuntime, frame: np.ndarray) -> Path:
 def _build_env(config: PipelineConfig, video_dir: Path):
     """Create a single evaluation environment configured for rollout recording."""
     rollout_api = load_rollout_policy_api(config.isaac_groot_root)
+    terminate_on_success = bool(config.terminate_on_success)
+    if _is_btaudit2_test(config):
+        terminate_on_success = False
+
     wrapper_configs = rollout_api.WrapperConfigs(
         video=rollout_api.VideoConfig(
             video_dir=str(video_dir),
@@ -556,7 +632,7 @@ def _build_env(config: PipelineConfig, video_dir: Path):
         multistep=rollout_api.MultiStepConfig(
             n_action_steps=int(config.n_action_steps),
             max_episode_steps=int(config.max_episode_steps),
-            terminate_on_success=bool(config.terminate_on_success),
+            terminate_on_success=terminate_on_success,
         ),
     )
     return rollout_api.create_eval_env(
@@ -599,6 +675,16 @@ def _status_is_success(status: Dict[str, Any]) -> bool:
     if value in {"failure", "failed", "running", "in_progress", "pending"}:
         return False
     return bool(status.get("ok", False))
+
+
+def _info_success_is_true(value: Any) -> bool:
+    """Interpret env-info success values into a conservative boolean."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) > 0.0
+    text = str(value or "").strip().lower()
+    return text in {"true", "1", "yes", "y", "success", "succeeded", "complete", "completed", "done"}
 
 
 def _status_is_failure(status: Dict[str, Any]) -> bool:
@@ -855,9 +941,15 @@ def run_dabtroll_episode(
     prebuilt_bt_source_episode: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run one full DABTROLL episode: synthesize BT, execute, evaluate, archive."""
-    kb = kb or init_kb(project_root=Path(config.project_root).expanduser().resolve() if config.project_root else None)
+    logs_dir: Optional[Path] = None
+    project_root_path = Path(config.project_root).expanduser().resolve() if config.project_root else None
+    if _is_btaudit2_test(config):
+        resolved_project_root = project_root_path or find_project_root(Path(__file__).resolve())
+        logs_dir = resolved_project_root / "data" / "logs" / "btaudit2"
+
+    kb = kb or init_kb(project_root=project_root_path, logs_dir=logs_dir)
     run_tag = config.run_tag or kb.make_run_tag()
-    btaudit_enabled = _is_test_enabled(config, "btaudit")
+    btaudit_enabled = _is_btaudit_like_test(config)
     episode_index = max(int(config.episode_index), 1)
     episode_count = max(int(config.episode_count), 1)
     if btaudit_enabled:
@@ -974,6 +1066,7 @@ def run_dabtroll_episode(
     current_node_id: Optional[str] = None
     current_action_prompt: Optional[str] = None
     final_info_summary: Dict[str, Any] = {}
+    episode_success_ever = False
     last_policy_info: Dict[str, Any] = {}
     last_policy_action_key: Optional[str] = None
     node_fail_streak: Dict[str, int] = {}
@@ -1291,10 +1384,15 @@ def run_dabtroll_episode(
                         break
                     raise
                 final_info_summary = summarize_info(info)
+                episode_success_ever = episode_success_ever or _info_success_is_true(final_info_summary.get("success"))
 
-                frame = np.asarray(next_obs[primary_video_key])[-1] if np.asarray(next_obs[primary_video_key]).ndim >= 4 else np.asarray(next_obs[primary_video_key])
-                frame_path = runtime.save_frame(frame, step_idx)
-                recent_frames.append(np.array(frame, copy=True))
+                frame_path, frame_paths_by_view, primary_frame = runtime.save_obs_view_frames(
+                    next_obs,
+                    step_idx=step_idx,
+                    primary_video_key=primary_video_key,
+                    video_keys=task_engine.video_keys,
+                )
+                recent_frames.append(primary_frame)
                 recent_frame_paths.append(str(frame_path))
                 recent_frames = recent_frames[-max(status_window_frame_count, 2) :]
                 recent_frame_paths = recent_frame_paths[-max(status_window_frame_count, 2) :]
@@ -1309,6 +1407,7 @@ def run_dabtroll_episode(
                     "done": bool(done),
                     "truncated": bool(truncated),
                     "frame_path": str(frame_path),
+                    "frame_paths_by_view": frame_paths_by_view,
                     "policy_prompt_source": "default_env_task" if btaudit_enabled else "bt_wait",
                 }
                 wait_event.update(final_info_summary)
@@ -1328,6 +1427,7 @@ def run_dabtroll_episode(
                     frame_path=frame_path,
                     state_keys=state_keys,
                     preferred_state_key=config.state_key,
+                    info_summary=final_info_summary,
                 )
 
                 obs = next_obs
@@ -1707,10 +1807,15 @@ def run_dabtroll_episode(
                     break
                 raise
             final_info_summary = summarize_info(info)
+            episode_success_ever = episode_success_ever or _info_success_is_true(final_info_summary.get("success"))
 
-            frame = np.asarray(next_obs[primary_video_key])[-1] if np.asarray(next_obs[primary_video_key]).ndim >= 4 else np.asarray(next_obs[primary_video_key])
-            frame_path = runtime.save_frame(frame, step_idx)
-            recent_frames.append(np.array(frame, copy=True))
+            frame_path, frame_paths_by_view, primary_frame = runtime.save_obs_view_frames(
+                next_obs,
+                step_idx=step_idx,
+                primary_video_key=primary_video_key,
+                video_keys=task_engine.video_keys,
+            )
+            recent_frames.append(primary_frame)
             recent_frame_paths.append(str(frame_path))
             recent_frames = recent_frames[-max(status_window_frame_count, 2) :]
             recent_frame_paths = recent_frame_paths[-max(status_window_frame_count, 2) :]
@@ -1728,6 +1833,7 @@ def run_dabtroll_episode(
                 "done": bool(done),
                 "truncated": bool(truncated),
                 "frame_path": str(frame_path),
+                "frame_paths_by_view": frame_paths_by_view,
                 "policy_prompt_source": "audit_high_level_task",
             }
             terminal_event.update(final_info_summary)
@@ -1747,7 +1853,106 @@ def run_dabtroll_episode(
                 frame_path=frame_path,
                 state_keys=state_keys,
                 preferred_state_key=config.state_key,
+                info_summary=final_info_summary,
             )
+
+            should_check_status = (step_idx % status_eval_every_steps == 0) or bool(done) or bool(truncated)
+            if should_check_status and isinstance(last_status_eval_node, dict):
+                terminal_node_id = str(last_status_eval_node.get("id", ""))
+                terminal_node_type = str(last_status_eval_node.get("type", ""))
+                terminal_status_eval_id = f"{episode_id}:step_{step_idx}:node_{terminal_node_id}:post_terminal"
+                terminal_status, terminal_status_trace_entries = mission_engine.evaluate_node_status_with_trace(
+                    last_status_eval_node,
+                    recent_frames[-status_window_frame_count:],
+                    progress_history=node_progress_history.get(terminal_node_id, [])[-6:],
+                    criteria_met_history=node_criteria_met_history.get(terminal_node_id, []),
+                )
+                _log_status_eval_trace(
+                    trace_entries=terminal_status_trace_entries,
+                    step=step_idx,
+                    node_id_for_log=terminal_node_id,
+                    node_type_for_log=terminal_node_type,
+                    frame_paths=recent_frame_paths[-status_window_frame_count:],
+                    request_kind_prefix="status_eval_post_terminal",
+                    status_eval_id=terminal_status_eval_id,
+                )
+                terminal_status_label, terminal_status_confidence = _standardize_vlm_status(terminal_status)
+                terminal_criteria_met = (
+                    terminal_status.get("criteria_met", [])
+                    if isinstance(terminal_status.get("criteria_met", []), list)
+                    else []
+                )
+                terminal_criteria_missing = (
+                    terminal_status.get("criteria_missing", [])
+                    if isinstance(terminal_status.get("criteria_missing", []), list)
+                    else []
+                )
+                terminal_status_prompt_text = str(terminal_status.get("_vlm_prompt_text", "") or "")
+                terminal_raw_vlm_response = str(terminal_status.get("_vlm_response_raw", "") or "")
+
+                kb.append_jsonl(
+                    runtime.ep.status_window_manifest_path,
+                    {
+                        "ts": time.time(),
+                        "schema": "dabtroll.status_window_manifest.v1",
+                        "status_eval_id": terminal_status_eval_id,
+                        "episode_id": episode_id,
+                        "scenario_id": scenario_id,
+                        "condition": condition,
+                        "task_family": task_family,
+                        "step": step_idx,
+                        "node_id": terminal_node_id,
+                        "node_type": terminal_node_type,
+                        "frames": recent_frame_paths[-status_window_frame_count:],
+                        "prompt_text": terminal_status_prompt_text,
+                        "human_status_window_rating": None,
+                        "human_notes": "",
+                        "post_terminal_check": True,
+                    },
+                )
+
+                kb.append_jsonl(
+                    runtime.ep.status_log_path,
+                    {
+                        "ts": time.time(),
+                        "status_eval_id": terminal_status_eval_id,
+                        "episode_id": episode_id,
+                        "step": step_idx,
+                        "node_id": terminal_node_id,
+                        "node_type": terminal_node_type,
+                        "status": terminal_status.get("status"),
+                        "status_label_std": terminal_status_label,
+                        "vlm_confidence": terminal_status_confidence,
+                        "notes": terminal_status.get("notes", ""),
+                        "progress_score": terminal_status.get("progress", terminal_status.get("progress_score")),
+                        "criteria_met": terminal_criteria_met,
+                        "criteria_missing": terminal_criteria_missing,
+                        "vlm_prompt_text": terminal_status_prompt_text,
+                        "vlm_response_raw": terminal_raw_vlm_response,
+                        "vlm_mode": str(terminal_status.get("_vlm_mode", "") or ""),
+                        "frames": recent_frame_paths[-status_window_frame_count:],
+                        "post_terminal_check": True,
+                        "bt_state": state,
+                    },
+                )
+                runtime.write_event(
+                    {
+                        "ts": time.time(),
+                        "event": "status_eval_post_terminal",
+                        "episode_id": episode_id,
+                        "status_eval_id": terminal_status_eval_id,
+                        "step": step_idx,
+                        "node_id": terminal_node_id,
+                        "node_type": terminal_node_type,
+                        "status": terminal_status.get("status"),
+                        "status_label_std": terminal_status_label,
+                        "vlm_confidence": terminal_status_confidence,
+                        "notes": terminal_status.get("notes", ""),
+                        "post_terminal_check": True,
+                        "bt_state": state,
+                    }
+                )
+
             obs = next_obs
             prev_state_vec = curr_state_vec
             step_idx += 1
@@ -1878,10 +2083,15 @@ def run_dabtroll_episode(
                 break
             raise
         final_info_summary = summarize_info(info)
+        episode_success_ever = episode_success_ever or _info_success_is_true(final_info_summary.get("success"))
 
-        frame = np.asarray(next_obs[primary_video_key])[-1] if np.asarray(next_obs[primary_video_key]).ndim >= 4 else np.asarray(next_obs[primary_video_key])
-        frame_path = runtime.save_frame(frame, step_idx)
-        recent_frames.append(np.array(frame, copy=True))
+        frame_path, frame_paths_by_view, primary_frame = runtime.save_obs_view_frames(
+            next_obs,
+            step_idx=step_idx,
+            primary_video_key=primary_video_key,
+            video_keys=task_engine.video_keys,
+        )
+        recent_frames.append(primary_frame)
         recent_frame_paths.append(str(frame_path))
         recent_frames = recent_frames[-max(status_window_frame_count, 2) :]
         recent_frame_paths = recent_frame_paths[-max(status_window_frame_count, 2) :]
@@ -1898,6 +2108,7 @@ def run_dabtroll_episode(
             "done": bool(done),
             "truncated": bool(truncated),
             "frame_path": str(frame_path),
+            "frame_paths_by_view": frame_paths_by_view,
             "policy_prompt_source": "audit_high_level_task" if btaudit_enabled else "bt_node",
         }
         event.update(final_info_summary)
@@ -1917,6 +2128,7 @@ def run_dabtroll_episode(
             frame_path=frame_path,
             state_keys=state_keys,
             preferred_state_key=config.state_key,
+            info_summary=final_info_summary,
         )
 
         should_check_status = (step_idx % status_eval_every_steps == 0) or bool(done) or bool(truncated)
@@ -2200,6 +2412,7 @@ def run_dabtroll_episode(
         "summary_path": str(runtime.summary_path),
         "last_policy_action_key": last_policy_action_key,
         "info_summary": final_info_summary,
+        "success_ever": bool(episode_success_ever),
         "mission_engine_latency_s": bt_response.get("latency_s"),
         "mission_engine_bt_ok": bool(bt_response.get("ok")),
         "mission_engine_bt_error": bt_response.get("error") if not bt_response.get("ok") else None,
@@ -2268,6 +2481,7 @@ def run_dabtroll_episode(
                 "abort_reason": None,
                 "done": bool(done),
                 "truncated": bool(truncated),
+                "success_ever": bool(episode_success_ever),
                 "bt_final_state": final_bt_state,
             },
             "agreement_placeholders": {
@@ -2422,7 +2636,7 @@ def main() -> None:
     ap.add_argument(
         "--test",
         default="",
-        help="Optional test mode. Examples: gr00t_reset, btaudit",
+        help="Optional test mode. Examples: gr00t_reset, btaudit, btaudit2",
     )
     ap.add_argument("--scenario-id", default="", help="Optional scenario identifier for experiment joins.")
     ap.add_argument("--condition", default="", help="Optional condition label for experiment joins.")
