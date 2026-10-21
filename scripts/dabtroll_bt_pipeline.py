@@ -30,7 +30,7 @@ from PIL import Image
 from dabtroll_bt_planner import parse_json_from_text
 from knowledge_base import KnowledgeBase, find_project_root, init_kb
 from mission_engine import BehaviorTreeRunner, bt_to_graphviz
-from prompts import bt_wait_text, default_high_level_task_text, preflight_probe_text, status_eval_text
+from prompts import bt_wait_text, default_high_level_task_text, load_status_prompt, preflight_probe_text
 from task_engine import (
     TaskEngineClient,
     build_state_snapshot,
@@ -82,6 +82,7 @@ class PipelineConfig:
     task_family: str = ""
     bt_version: str = "dabtroll_bt_v1"
     run_tag: str = ""
+    status_prompt: str = "standard"
 
 
 def _normalized_test_name(value: Optional[str]) -> str:
@@ -107,7 +108,11 @@ def _is_btaudit2_test(config: PipelineConfig) -> bool:
 class MissionEngineClient:
     """REQ client wrapper for mission-engine server requests and retries."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 5560, timeout_ms: int = 120000):
+    def __init__(
+        self, host: str = "127.0.0.1", port: int = 5560,
+        timeout_ms: int = 120000, status_prompt: str = "standard",
+    ):
+        self.status_prompt = load_status_prompt(status_prompt)
         self.host = host
         self.port = int(port)
         self.timeout_ms = int(timeout_ms)
@@ -285,7 +290,7 @@ class MissionEngineClient:
         node_desc = str(detail.get("description") or node.get("description") or "")
         success_criteria = str(detail.get("success_criteria") or "")
 
-        prompt_text = status_eval_text(
+        prompt_text = self.status_prompt(
             node_type,
             node_desc,
             success_criteria,
@@ -296,6 +301,8 @@ class MissionEngineClient:
         def _normalize_status_payload(payload: Dict[str, Any], raw_text: str, mode: str) -> Dict[str, Any]:
             normalized = dict(payload or {})
             normalized["_vlm_prompt_text"] = prompt_text
+            normalized["_vlm_prompt_id"] = self.status_prompt.name
+            normalized["_vlm_prompt_sha256"] = self.status_prompt.sha256
             normalized["_vlm_response_raw"] = raw_text
             normalized["_vlm_mode"] = mode
 
@@ -346,6 +353,7 @@ class MissionEngineClient:
             {
                 "direction": "request",
                 "request_kind": "status_eval_primary",
+                "status_prompt": self.status_prompt.metadata(),
                 "mode": "text_video",
                 "payload": _sanitize_request_payload(primary_request),
             }
@@ -978,6 +986,10 @@ def run_dabtroll_episode(
         host=config.mission_host,
         port=config.mission_port,
         timeout_ms=config.mission_timeout_ms,
+        status_prompt=config.status_prompt,
+    )
+    (runtime.ep.episode_dir / "status_prompt_source.txt").write_text(
+        mission_engine.status_prompt.source_text, encoding="utf-8",
     )
     status_eval_every_steps = _status_eval_every_steps(config)
     status_window_frame_count = _status_window_frame_count(config)
@@ -1023,6 +1035,7 @@ def run_dabtroll_episode(
             "start_frame_path": str(start_frame_path),
             "status_eval_every_n_steps": status_eval_every_steps,
             "status_eval_seconds_target": float(config.status_eval_seconds),
+            "status_prompt": mission_engine.status_prompt.metadata(),
             "status_window_frames": status_window_frame_count,
             "status_window_seconds_target": float(config.status_window_seconds),
             "policy_refocus_on_failed_status": bool(config.policy_refocus_on_failed_status),
@@ -1196,7 +1209,7 @@ def run_dabtroll_episode(
         "image_path": str(start_frame_path),
         "frames_b64": [],
         "mission_name": str(mission_name),
-        "task_text": str(high_level_task),
+        "task_text": str(default_task or high_level_task),
         "bt_variant": "btaudit" if btaudit_enabled else "",
         "bt_max_new_tokens": int(config.bt_max_new_tokens),
     }
@@ -1611,6 +1624,7 @@ def run_dabtroll_episode(
             "bt_validation_path": str(runtime.ep.bt_validation_path),
             "status_eval_every_n_steps": status_eval_every_steps,
             "status_eval_seconds_target": float(config.status_eval_seconds),
+            "status_prompt": mission_engine.status_prompt.metadata(),
             "status_window_frames": status_window_frame_count,
             "status_window_seconds_target": float(config.status_window_seconds),
             "policy_refocus_on_failed_status": bool(config.policy_refocus_on_failed_status),
@@ -2429,6 +2443,7 @@ def run_dabtroll_episode(
         "bt_validation_path": str(runtime.ep.bt_validation_path),
         "status_eval_every_n_steps": status_eval_every_steps,
         "status_eval_seconds_target": float(config.status_eval_seconds),
+        "status_prompt": mission_engine.status_prompt.metadata(),
         "status_window_frames": status_window_frame_count,
         "status_window_seconds_target": float(config.status_window_seconds),
         "policy_refocus_on_failed_status": bool(config.policy_refocus_on_failed_status),
@@ -2572,6 +2587,7 @@ def main() -> None:
     ap.add_argument("--mission-host", default="127.0.0.1")
     ap.add_argument("--mission-port", type=int, default=5560)
     ap.add_argument("--mission-timeout-ms", type=int, default=120000)
+    ap.add_argument("--status-prompt", default="standard", help="Named status prompt, versioned template ID, or .txt path.")
     ap.add_argument("--bt-timeout-ms", type=int, default=240000)
     ap.add_argument("--bt-max-new-tokens", type=int, default=1024)
     ap.add_argument(
@@ -2656,6 +2672,7 @@ def main() -> None:
             mission_host=args.mission_host,
             mission_port=args.mission_port,
             mission_timeout_ms=args.mission_timeout_ms,
+            status_prompt=args.status_prompt,
             bt_timeout_ms=args.bt_timeout_ms,
             bt_max_new_tokens=args.bt_max_new_tokens,
             frame_every_n_steps=args.frame_every_n_steps,

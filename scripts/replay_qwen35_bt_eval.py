@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Replay mission-engine status evaluation on existing episode frames using Qwen3.5.
+"""Replay any served mission model on existing episode frames with an explicit status prompt.
 
 This script does NOT run simulation. By default it builds its own replay windows
 from episode frame files and iterates its own BT state transitions. It reuses:
@@ -16,17 +16,19 @@ with:
 - missionengine.jsonl
 - pipeline_trace.jsonl
 
-It also appends/overwrites only Sheet 3 in existing human workbook:
-- Sheet name: sheet3_qwen3_5_MissionEngine_Review
+The legacy filename/default labels are retained for existing launchers. Select
+model label, prompt, output prefix, and review sheet independently for new models.
 """
 
 import argparse
 import base64
+import hashlib
 import io
 import json
 import re
 import time
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -39,7 +41,7 @@ from dabtroll_bt_pipeline import (
     _status_window_frame_count,
 )
 from mission_engine import BehaviorTreeRunner
-from prompts import status_eval_text
+from prompts import load_status_prompt
 
 try:
     from openpyxl import load_workbook
@@ -55,6 +57,10 @@ TITLE_FILL = PatternFill(fill_type="solid", fgColor="E2F0D9")
 THIN = Side(border_style="thin", color="BFBFBF")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 CUDA_ERROR_RE = re.compile(r"(cuda|unspecified launch failure|cudaerrorlaunchfailure|cublas|device-side assert)", re.IGNORECASE)
+BACKEND_ERROR_RE = re.compile(
+    r"(enginecore|enginedead|engine core|connection error|connection refused|mission_engine_timeout)",
+    re.IGNORECASE,
+)
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -258,6 +264,20 @@ def _parse_mmss_to_seconds(text: Any) -> Optional[float]:
     return float(minutes * 60 + seconds)
 
 
+def _to_progress_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip().replace("%", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
 def _backfill_sheet2_video_times(
     workbook_path: Path,
     outer_step_seconds: float,
@@ -394,7 +414,8 @@ def _build_manifest_rows_from_frames(
     rows: List[Dict[str, Any]] = []
 
     step_increment = max(1, int(eval_every_steps))
-    step = 0
+    # First status eval should be at cadence mark (e.g. 2s), not at t=0.
+    step = step_increment
     while step <= step_limit:
         start = max(0, step - int(window_frames) + 1)
         window_paths: List[str] = []
@@ -416,7 +437,7 @@ def _build_manifest_rows_from_frames(
             )
         step += step_increment
 
-    if step_limit not in {row.get("step") for row in rows}:
+    if step_limit >= step_increment and step_limit not in {row.get("step") for row in rows}:
         start = max(0, int(step_limit) - int(window_frames) + 1)
         window_paths = [str(path_by_step[s]) for s in range(start, int(step_limit) + 1) if s in path_by_step]
         if window_paths:
@@ -443,6 +464,7 @@ def _filter_manifest_for_simulation_timing(
     final_step: Optional[int],
 ) -> List[Dict[str, Any]]:
     filtered: List[Dict[str, Any]] = []
+    min_eval_step = max(1, int(expected_eval_every_steps))
     first_step: Optional[int] = None
     for row in manifest_rows:
         s = row.get("step")
@@ -453,6 +475,9 @@ def _filter_manifest_for_simulation_timing(
     for row in manifest_rows:
         step = row.get("step")
         if not isinstance(step, int):
+            continue
+
+        if step < min_eval_step:
             continue
 
         if first_step is None:
@@ -599,6 +624,8 @@ def _summarize_mission_response_quality(mission_rows: List[Dict[str, Any]]) -> D
     error = 0
     cuda = 0
     empty_text = 0
+    invalid_status = 0
+    backend = 0
 
     for row in mission_rows:
         if str(row.get("direction", "") or "") != "response":
@@ -616,6 +643,9 @@ def _summarize_mission_response_quality(mission_rows: List[Dict[str, Any]]) -> D
 
         if response_ok:
             ok += 1
+            parsed = _parse_status_json(response_text)
+            if str(parsed.get("status", "")).strip().lower() not in {"running", "complete", "failure"}:
+                invalid_status += 1
         else:
             error += 1
             if not response_text.strip():
@@ -623,6 +653,8 @@ def _summarize_mission_response_quality(mission_rows: List[Dict[str, Any]]) -> D
 
         if CUDA_ERROR_RE.search("\n".join([response_error, response_error_blob, response_text])):
             cuda += 1
+        if not response_ok and BACKEND_ERROR_RE.search("\n".join([response_error, response_error_blob])):
+            backend += 1
 
     ok_ratio = float(ok) / float(total) if total > 0 else 0.0
     reasons: List[str] = []
@@ -634,6 +666,8 @@ def _summarize_mission_response_quality(mission_rows: List[Dict[str, Any]]) -> D
         reasons.append(f"mission_cuda_rows={cuda}")
     if empty_text > 0:
         reasons.append(f"mission_empty_text_rows={empty_text}")
+    if invalid_status > 0:
+        reasons.append(f"mission_invalid_status_rows={invalid_status}")
 
     has_errors = len(reasons) > 0
     return {
@@ -642,6 +676,8 @@ def _summarize_mission_response_quality(mission_rows: List[Dict[str, Any]]) -> D
         "mission_response_error_rows": error,
         "mission_cuda_error_rows": cuda,
         "mission_empty_text_rows": empty_text,
+        "mission_invalid_status_rows": invalid_status,
+        "mission_backend_error_rows": backend,
         "mission_response_ok_ratio": ok_ratio,
         "mission_has_errors": has_errors,
         "mission_error_reason": "clean_mission_responses" if not has_errors else ",".join(reasons),
@@ -680,7 +716,7 @@ def _write_review_sheet(
 
     instructions = (
         "Instructions: Review major milestones (especially node completion points). Video time starts at 0:00 for "
-        "frame_00000. For each row, judge whether qwen3.5 mission-engine assessment is correct, enter reviewer time/frame "
+        "frame_00000. For each row, judge whether the selected model's mission-engine assessment is correct, enter reviewer time/frame "
         "if different, and explain disagreement."
     )
     ws.merge_cells("A2:T4")
@@ -695,7 +731,9 @@ def _write_review_sheet(
     ws.merge_cells("A6:T6")
     ws["A6"] = (
         f"Episode: {summary.get('episode_id', '')} | Mission: {summary.get('mission_name', '')} | "
-        f"Model: Qwen/Qwen3.5-9B"
+        f"Model: {summary.get('model_label', 'Qwen/Qwen3.5-9B')} | "
+        f"Prompt: {summary.get('status_prompt', 'standard')} | "
+        f"SHA256: {summary.get('status_prompt_sha256', '')}"
     )
 
     headers = [
@@ -788,7 +826,18 @@ def _replay_episode(
     use_manifest_prompts: bool,
     window_source: str,
     review_sheet_name: str,
+    status_prompt: str,
+    model_label: str,
+    output_prefix: str,
+    status_max_new_tokens: int,
+    expected_prompt_sha256: str = "",
+    expected_mission_model: str = "",
+    overwrite_review_sheet: bool = True,
+    stop_on_backend_failure: bool = False,
 ) -> Dict[str, Any]:
+    prompt_profile = load_status_prompt(status_prompt)
+    if expected_prompt_sha256 and prompt_profile.sha256 != expected_prompt_sha256:
+        raise ValueError("Selected status prompt changed since the experiment snapshot; refusing mixed revisions.")
     summary_path = episode_dir / "episode_summary.json"
     bt_path = episode_dir / "bt.json"
     manifest_path = episode_dir / "status_window_manifest.jsonl"
@@ -799,6 +848,18 @@ def _replay_episode(
         raise FileNotFoundError(
             f"Episode missing required files in {episode_dir}: episode_summary.json, bt.json, human_rater_evaluation.xlsx"
         )
+    if not overwrite_review_sheet:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Title is more than 31 characters.*", category=UserWarning)
+            workbook = load_workbook(workbook_path, read_only=True)
+        try:
+            if review_sheet_name in workbook.sheetnames:
+                raise FileExistsError(
+                    f"Review sheet {review_sheet_name!r} already exists in {workbook_path}; "
+                    "choose a new prompt revision/sheet instead of overwriting reviewed results."
+                )
+        finally:
+            workbook.close()
 
     summary = _read_json(summary_path)
     bt_json = _read_json(bt_path)
@@ -845,18 +906,43 @@ def _replay_episode(
             final_step=final_step if final_step >= 0 else None,
         )
 
-    qwen_out_dir = episode_dir / f"qwen_3_5_{out_tag}"
-    qwen_out_dir.mkdir(parents=True, exist_ok=True)
+    qwen_out_dir = episode_dir / f"{output_prefix}_{out_tag}"
+    qwen_out_dir.mkdir(parents=True, exist_ok=False)
     out_manifest_path = qwen_out_dir / "status_window_manifest.jsonl"
     out_mission_path = qwen_out_dir / "missionengine.jsonl"
     out_trace_path = qwen_out_dir / "pipeline_trace.jsonl"
 
     client = MissionEngineClient(host=mission_host, port=mission_port, timeout_ms=mission_timeout_ms)
+    server_health = client.request({"mode": "health"}, retries=0)
+    if not server_health.get("ok"):
+        raise RuntimeError(f"Mission server health failed: {server_health}")
+    if expected_mission_model and server_health.get("model") != expected_mission_model:
+        raise ValueError(f"Expected mission model {expected_mission_model!r}, got {server_health.get('model')!r}")
+    prompt_metadata = {
+        "status_prompt": prompt_profile.name,
+        "status_prompt_sha256": prompt_profile.sha256,
+        "model": model_label,
+    }
+    replay_config = {
+        **prompt_metadata,
+        "prompt_source": prompt_profile.metadata(),
+        "use_manifest_prompts": use_manifest_prompts,
+        "server_health": server_health,
+        "episode_dir": str(episode_dir),
+        "review_sheet_name": review_sheet_name,
+        "status_max_new_tokens": status_max_new_tokens,
+        "window_source": window_source,
+        "expected_eval_every_n_steps": expected_eval_every_steps,
+        "expected_status_window_frames": expected_window_frames,
+    }
+    (qwen_out_dir / "status_prompt_source.txt").write_text(prompt_profile.source_text, encoding="utf-8")
+    (qwen_out_dir / "replay_config.json").write_text(json.dumps(replay_config, indent=2), encoding="utf-8")
 
     replay_manifest_rows: List[Dict[str, Any]] = []
     replay_mission_rows: List[Dict[str, Any]] = []
     replay_trace_rows: List[Dict[str, Any]] = []
     btstatus_complete_rows: List[Dict[str, Any]] = []
+    node_low_progress_counts: Dict[str, int] = {}
     last_active_node: Optional[Dict[str, Any]] = None
     bt_terminal_state: str = ""
 
@@ -864,32 +950,34 @@ def _replay_episode(
         bt_state, active_node = runner.tick()
         if isinstance(active_node, dict):
             last_active_node = active_node
-        elif not bt_terminal_state:
-            # BT just reached terminal state — record it but continue processing
-            # remaining manifest rows using the last known active node.
+        else:
+            # Once BT is terminal, tracking for this episode is complete.
             bt_terminal_state = bt_state
-        if last_active_node is None:
-            # No node has ever been active (e.g. empty BT); nothing to evaluate.
             break
 
         active_node = last_active_node
         step = int(item.get("step", 0) or 0)
         node_id = str(active_node.get("id", "") or "")
         node_type = str(active_node.get("type", "") or "")
-        status_eval_id = f"qwen35:{summary.get('episode_id','')}:step_{step}:node_{node_id}"
+        status_eval_id = f"{output_prefix}:{summary.get('episode_id','')}:step_{step}:node_{node_id}"
         frames = [str(p) for p in item.get("frames", []) if str(p)]
         frame_paths = [Path(p) for p in frames if Path(p).exists()]
         if not frame_paths:
             continue
 
         prompt_text = str(item.get("prompt_text", "") or "").strip() if use_manifest_prompts else ""
+        window_prompt_metadata = dict(prompt_metadata)
+        if prompt_text:
+            window_prompt_metadata["status_prompt"] = "manifest"
+            window_prompt_metadata["status_prompt_sha256"] = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
         if not prompt_text:
             node_info = node_map.get(node_id, {})
-            prompt_text = status_eval_text(
+            prompt_text = prompt_profile(
                 node_type or str(node_info.get("node_type", "") or "action"),
                 str(node_info.get("description", "") or ""),
                 str(node_info.get("success_criteria", "") or ""),
             )
+        window_prompt_metadata["prompt_text_sha256"] = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
 
         frames_b64 = [_encode_jpg_file(p) for p in frame_paths]
         current_frame = _frame_token_from_paths(frames)
@@ -899,10 +987,12 @@ def _replay_episode(
             "mode": "text_video",
             "prompt_text": prompt_text,
             "frames_b64": frames_b64,
+            "max_new_tokens": int(status_max_new_tokens),
         }
 
         req_ts = time.time()
         req_row = {
+            **window_prompt_metadata,
             "ts": req_ts,
             "direction": "request",
             "request_kind": "status_eval_qwen3_5",
@@ -929,6 +1019,7 @@ def _replay_episode(
         valid_status = parsed_status_std if response_ok and parsed_status_std in {"running", "complete", "failure"} else ""
 
         resp_row = {
+            **window_prompt_metadata,
             "ts": resp_ts,
             "direction": "response",
             "request_kind": "status_eval_qwen3_5",
@@ -949,22 +1040,39 @@ def _replay_episode(
         }
         replay_mission_rows.append(resp_row)
 
+        status = valid_status
+        progress = parsed.get("progress_score", parsed.get("progress", ""))
+        notes = str(parsed.get("notes", "") or "")
+        progress_float = _to_progress_float(progress)
+        if progress_float is not None and progress_float < 0.5:
+            node_low_progress_counts[node_id] = int(node_low_progress_counts.get(node_id, 0)) + 1
+
+        if status == "failure":
+            low_progress_count = int(node_low_progress_counts.get(node_id, 0))
+            # Prevent early lock-up on low-evidence failure labels.
+            if low_progress_count <= 3:
+                status = "running"
+                if notes:
+                    notes = f"{notes} | failure_ignored_low_evidence(count={low_progress_count})"
+                else:
+                    notes = f"failure_ignored_low_evidence(count={low_progress_count})"
+
         out_manifest = dict(item)
+        out_manifest.update(window_prompt_metadata)
+        out_manifest["prompt_text"] = prompt_text
         out_manifest["qwen35_replay"] = True
         out_manifest["qwen35_ts"] = resp_ts
         out_manifest["qwen35_status_eval_id"] = status_eval_id
         out_manifest["qwen35_response_text"] = response_text
         out_manifest["qwen35_response_ok"] = response_ok
-        out_manifest["qwen35_status"] = valid_status
+        out_manifest["qwen35_status"] = status
         out_manifest["qwen35_status_raw"] = parsed_status
-        out_manifest["qwen35_progress_score"] = parsed.get("progress_score", parsed.get("progress", ""))
-        out_manifest["qwen35_notes"] = str(parsed.get("notes", "") or "")
+        out_manifest["qwen35_progress_score"] = progress
+        out_manifest["qwen35_notes"] = notes
+        out_manifest["qwen35_low_progress_count"] = int(node_low_progress_counts.get(node_id, 0))
         replay_manifest_rows.append(out_manifest)
-
-        status = valid_status
-        progress = parsed.get("progress_score", parsed.get("progress", ""))
-        notes = str(parsed.get("notes", "") or "")
         trace_event = {
+            **window_prompt_metadata,
             "ts": resp_ts,
             "event": "status_eval_qwen3_5",
             "episode_id": summary.get("episode_id", ""),
@@ -980,7 +1088,8 @@ def _replay_episode(
             "progress_score": progress,
             "criteria_met": parsed.get("criteria_met", []) if isinstance(parsed.get("criteria_met", []), list) else [],
             "criteria_missing": parsed.get("criteria_missing", []) if isinstance(parsed.get("criteria_missing", []), list) else [],
-            "qwen_model": "Qwen/Qwen3.5-9B",
+            "qwen_model": model_label,
+            "model": model_label,
             "response_ok": response_ok,
         }
         replay_trace_rows.append(trace_event)
@@ -1003,6 +1112,10 @@ def _replay_episode(
         # Only advance the BT runner when it is not already at a terminal state.
         if not bt_terminal_state and status in {"complete", "failure"}:
             runner.set_status(active_node, {"status": status})
+        if stop_on_backend_failure and not response_ok and BACKEND_ERROR_RE.search(
+            str(response.get("error", "")) if isinstance(response, dict) else ""
+        ):
+            break
 
     _write_jsonl(out_manifest_path, replay_manifest_rows)
     _write_jsonl(out_mission_path, replay_mission_rows)
@@ -1032,7 +1145,10 @@ def _replay_episode(
     if not bool(quality.get("mission_has_errors", False)):
         _write_review_sheet(
             workbook_path=workbook_path,
-            summary=summary,
+            summary={
+                **summary, "model_label": model_label,
+                "status_prompt": prompt_profile.name, "status_prompt_sha256": prompt_profile.sha256,
+            },
             milestones=milestones,
             bt_svg_path=episode_dir / "bt.svg",
             sheet_name=review_sheet_name,
@@ -1047,6 +1163,9 @@ def _replay_episode(
     return {
         "episode_dir": str(episode_dir),
         "qwen_output_dir": str(qwen_out_dir),
+        "replay_output_dir": str(qwen_out_dir),
+        "model_label": model_label,
+        "output_prefix": output_prefix,
         "window_source": str(window_source),
         "expected_eval_every_n_steps": int(expected_eval_every_steps),
         "expected_status_window_frames": int(expected_window_frames),
@@ -1054,6 +1173,9 @@ def _replay_episode(
         "mission_rows": len(replay_mission_rows),
         "trace_rows": len(replay_trace_rows),
         "review_sheet_name": review_sheet_name,
+        "status_prompt": prompt_profile.name,
+        "status_prompt_sha256": prompt_profile.sha256,
+        "replay_config_path": str(qwen_out_dir / "replay_config.json"),
         "review_sheet_written": bool(review_sheet_written),
         "review_sheet_path": str(workbook_path) if review_sheet_written else "",
         "sheet2_video_times_filled": int(sheet2_video_times_filled),
@@ -1063,6 +1185,8 @@ def _replay_episode(
         "mission_response_error_rows": int(quality.get("mission_response_error_rows", 0)),
         "mission_cuda_error_rows": int(quality.get("mission_cuda_error_rows", 0)),
         "mission_empty_text_rows": int(quality.get("mission_empty_text_rows", 0)),
+        "mission_invalid_status_rows": int(quality.get("mission_invalid_status_rows", 0)),
+        "mission_backend_error_rows": int(quality.get("mission_backend_error_rows", 0)),
         "mission_response_ok_ratio": float(quality.get("mission_response_ok_ratio", 0.0)),
         "mission_has_errors": bool(quality.get("mission_has_errors", False)),
         "mission_error_reason": str(quality.get("mission_error_reason", "")),
@@ -1070,7 +1194,7 @@ def _replay_episode(
 
 
 def _parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="Replay Qwen3.5 mission evaluation over existing episode frames")
+    ap = argparse.ArgumentParser(description="Replay a served mission model over existing episode frames")
     ap.add_argument("--episode-dir", action="append", default=[], help="Episode directory (repeatable)")
     ap.add_argument("--mission-host", default="127.0.0.1")
     ap.add_argument("--mission-port", type=int, default=5560)
@@ -1114,6 +1238,32 @@ def _parse_args() -> argparse.Namespace:
         default="sheet3_qwen3_5_MissionEngine_Review",
         help="Workbook sheet name to write when replay responses are clean.",
     )
+    ap.add_argument(
+        "--status-prompt",
+        default="standard",
+        help="Named builder, config/status_prompts template ID, or explicit .txt path.",
+    )
+    ap.add_argument("--expected-prompt-sha256", default="", help="Fail if the selected prompt differs from the batch snapshot.")
+    ap.add_argument("--expected-mission-model", default="", help="Required model name in server health, when specified.")
+    ap.add_argument("--no-overwrite-review-sheet", action="store_true", help="Refuse to replace an existing review sheet.")
+    ap.add_argument("--stop-on-backend-failure", action="store_true", help="Stop an episode after an engine crash/connection failure.")
+    ap.add_argument("--result-json", type=Path, help="Write the CLI result separately from diagnostic stdout for batch consumers.")
+    ap.add_argument(
+        "--model-label",
+        default="Qwen/Qwen3.5-9B",
+        help="Model identifier recorded in replay artifacts.",
+    )
+    ap.add_argument(
+        "--output-prefix",
+        default="qwen_3_5",
+        help="Episode-local replay output directory prefix.",
+    )
+    ap.add_argument(
+        "--status-max-new-tokens",
+        type=int,
+        default=256,
+        help="Per-status-eval token budget sent to mission server text_video requests.",
+    )
     return ap.parse_args()
 
 
@@ -1122,7 +1272,7 @@ def main() -> None:
     if not args.episode_dir:
         raise SystemExit("Provide at least one --episode-dir")
 
-    out_tag = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    out_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     results: List[Dict[str, Any]] = []
     for ep in args.episode_dir:
         ep_path = Path(ep).expanduser().resolve()
@@ -1139,10 +1289,21 @@ def main() -> None:
                 use_manifest_prompts=bool(args.use_manifest_prompts) and not bool(args.ignore_manifest_prompts),
                 window_source=str(args.window_source),
                 review_sheet_name=str(args.review_sheet_name),
+                status_prompt=str(args.status_prompt),
+                model_label=str(args.model_label),
+                output_prefix=str(args.output_prefix),
+                status_max_new_tokens=int(args.status_max_new_tokens),
+                expected_prompt_sha256=str(args.expected_prompt_sha256),
+                expected_mission_model=str(args.expected_mission_model),
+                overwrite_review_sheet=not args.no_overwrite_review_sheet,
+                stop_on_backend_failure=args.stop_on_backend_failure,
             )
         )
 
-    print(json.dumps({"ok": True, "timestamp": out_tag, "episodes": results}, indent=2))
+    result_text = json.dumps({"ok": True, "timestamp": out_tag, "episodes": results}, indent=2)
+    if args.result_json is not None:
+        args.result_json.write_text(result_text + "\n", encoding="utf-8")
+    print(result_text)
 
 
 if __name__ == "__main__":

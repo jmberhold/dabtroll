@@ -1,0 +1,17 @@
+# CPU analysis, replay client, dataset audit, and mock-server tests (Python >=3.10).
+# Model servers and RoboCasa/GR00T require separate environments; see docs/getting_started.md.
+numpy>=1.24
+pandas>=2.0
+openpyxl>=3.1
+pillow>=10
+matplotlib>=3.7
+scipy>=1.10
+pyzmq>=25
+openai>=1.0
+httpx>=0.27
+opencv-python>=4.8
+graphviz>=0.20
+jupyterlab>=4
+nbformat>=5.9
+nbclient>=0.10
+ipykernel>=6

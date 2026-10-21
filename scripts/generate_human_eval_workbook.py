@@ -146,6 +146,62 @@ def _frame_token_from_entry(entry: Dict[str, Any]) -> str:
     return ""
 
 
+def _step_from_frame_token(token: str) -> Optional[int]:
+    text = str(token or "").strip()
+    if not text.startswith("frame_"):
+        return None
+    suffix = text[len("frame_") :]
+    if not suffix.isdigit():
+        return None
+    return int(suffix)
+
+
+def _coerce_step(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        return None
+    text = str(value or "").strip()
+    if text.isdigit():
+        return int(text)
+    return None
+
+
+def _normalize_success_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if float(value) == 1.0:
+            return True
+        if float(value) == 0.0:
+            return False
+    text = str(value or "").strip().lower()
+    if text in {"true", "1", "yes", "y", "success", "succeeded", "complete", "completed", "done"}:
+        return True
+    if text in {"false", "0", "no", "n", "fail", "failed", "failure", "incomplete"}:
+        return False
+    return ""
+
+
+def _build_state_success_by_step(state_rows: List[Dict[str, Any]]) -> Dict[int, Any]:
+    out: Dict[int, Any] = {}
+    for row in state_rows:
+        step = _coerce_step(row.get("step"))
+        if step is None:
+            continue
+        raw_success = row.get("success")
+        if raw_success is None and isinstance(row.get("info_summary"), dict):
+            raw_success = row["info_summary"].get("success")
+        if raw_success is None:
+            continue
+        out[step] = _normalize_success_value(raw_success)
+    return out
+
+
 def _flatten_bt_nodes(root: Dict[str, Any]) -> List[Dict[str, Any]]:
     nodes: List[Dict[str, Any]] = []
 
@@ -228,13 +284,16 @@ def _build_mission_milestones(
     btstatus_rows: List[Dict[str, Any]],
     outer_step_seconds: float,
     video_time_scale: Optional[float],
+    state_success_by_step: Dict[int, Any],
 ) -> List[Dict[str, Any]]:
     milestones: List[Dict[str, Any]] = []
 
     def _video_time_from_step(step: Optional[int]) -> str:
-        if step is None or video_time_scale is None:
+        if step is None:
             return ""
         machine_seconds = max(0.0, float(step) * float(outer_step_seconds))
+        if video_time_scale is None:
+            return _fmt_mmss_from_seconds(machine_seconds)
         return _fmt_mmss_from_seconds(machine_seconds * float(video_time_scale))
 
     for row in mission_rows:
@@ -244,7 +303,10 @@ def _build_mission_milestones(
             continue
         if "status_eval" not in request_kind:
             continue
-        step = row.get("step") if isinstance(row.get("step"), int) else None
+        frame = _frame_token_from_entry(row)
+        step = _coerce_step(row.get("step"))
+        if step is None:
+            step = _step_from_frame_token(frame)
         response = row.get("response") if isinstance(row.get("response"), dict) else {}
         response_text = str(row.get("response_text", "") or response.get("text", "") or "")
         model_status, model_progress, model_notes = _parse_status_from_response_text(response_text)
@@ -257,13 +319,14 @@ def _build_mission_milestones(
                 "status_eval_id": str(row.get("status_eval_id", "") or ""),
                 "node_id": str(row.get("node_id", "") or ""),
                 "node_type": str(row.get("node_type", "") or ""),
-                "frame": _frame_token_from_entry(row),
+                "frame": frame,
                 "time": _fmt_mmss_from_step(step, outer_step_seconds),
                 "video_time": _video_time_from_step(step),
                 "model_status": model_status,
                 "model_progress": model_progress,
                 "model_notes": model_notes,
                 "model_latency_s": response.get("latency_s", row.get("response_latency_s", "")),
+                "sim_success": state_success_by_step.get(step, "") if step is not None else "",
             }
         )
 
@@ -271,7 +334,10 @@ def _build_mission_milestones(
         status = str(row.get("status", "") or "").strip().lower()
         if status != "complete":
             continue
-        step = row.get("step") if isinstance(row.get("step"), int) else None
+        frame = _frame_token_from_paths(row.get("frames", []))
+        step = _coerce_step(row.get("step"))
+        if step is None:
+            step = _step_from_frame_token(frame)
         milestones.append(
             {
                 "sort_step": step if step is not None else 10**9,
@@ -281,13 +347,14 @@ def _build_mission_milestones(
                 "status_eval_id": str(row.get("status_eval_id", "") or ""),
                 "node_id": str(row.get("node_id", "") or ""),
                 "node_type": str(row.get("node_type", "") or ""),
-                "frame": _frame_token_from_paths(row.get("frames", [])),
+                "frame": frame,
                 "time": _fmt_mmss_from_step(step, outer_step_seconds),
                 "video_time": _video_time_from_step(step),
                 "model_status": str(row.get("status", "") or ""),
                 "model_progress": str(row.get("progress_score", "") or ""),
                 "model_notes": str(row.get("notes", "") or ""),
                 "model_latency_s": "",
+                "sim_success": state_success_by_step.get(step, "") if step is not None else "",
             }
         )
 
@@ -309,7 +376,7 @@ def _style_data_grid(ws, start_row: int, end_row: int, start_col: int, end_col: 
         for c in range(start_col, end_col + 1):
             cell = ws.cell(row=r, column=c)
             cell.border = BORDER
-            if c in (12, 18):
+            if c in (12, 13, 19):
                 cell.alignment = Alignment(vertical="top", wrap_text=True)
             else:
                 cell.alignment = Alignment(vertical="center", wrap_text=True)
@@ -423,7 +490,7 @@ def _write_sheet2(
 ) -> None:
     ws = wb.create_sheet("Sheet2_MissionEngine_Review")
 
-    ws.merge_cells("A1:R1")
+    ws.merge_cells("A1:T1")
     ws["A1"] = "Human Review Sheet 2: Mission Engine Response and Milestone Agreement"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A1"].fill = TITLE_FILL
@@ -433,16 +500,16 @@ def _write_sheet2(
         "frame_00000. For each row, judge whether mission-engine assessment is correct, enter reviewer time/frame "
         "if different, and explain disagreement. Prioritize correctness of completion timing, status label, and evidence."
     )
-    ws.merge_cells("A2:R4")
+    ws.merge_cells("A2:T4")
     ws["A2"] = instructions
     ws["A2"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
-    ws.merge_cells("A5:R5")
+    ws.merge_cells("A5:T5")
     ws["A5"] = f"BT SVG (open externally): {bt_svg_path}"
     ws["A5"].hyperlink = bt_svg_path.as_uri() if bt_svg_path.exists() else None
     ws["A5"].font = Font(color="0563C1", underline="single") if bt_svg_path.exists() else Font(bold=True)
 
-    ws.merge_cells("A6:R6")
+    ws.merge_cells("A6:T6")
     ws["A6"] = (
         f"Episode: {summary.get('episode_id', '')} | Mission: {summary.get('mission_name', '')} | "
         f"Outer step seconds: {summary.get('outer_step_seconds', '')}"
@@ -459,6 +526,7 @@ def _write_sheet2(
         "machine_time_m:ss",
         "video_time_m:ss",
         "model_status",
+        "sim_success",
         "model_progress",
         "model_notes",
         "model_latency_s",
@@ -486,9 +554,10 @@ def _write_sheet2(
         ws.cell(row=row, column=8, value=m.get("time", ""))
         ws.cell(row=row, column=9, value=m.get("video_time", ""))
         ws.cell(row=row, column=10, value=m.get("model_status", ""))
-        ws.cell(row=row, column=11, value=m.get("model_progress", ""))
-        ws.cell(row=row, column=12, value=m.get("model_notes", ""))
-        ws.cell(row=row, column=13, value=m.get("model_latency_s", ""))
+        ws.cell(row=row, column=11, value=m.get("sim_success", ""))
+        ws.cell(row=row, column=12, value=m.get("model_progress", ""))
+        ws.cell(row=row, column=13, value=m.get("model_notes", ""))
+        ws.cell(row=row, column=14, value=m.get("model_latency_s", ""))
         row += 1
 
     data_end = max(header_row + 1, row - 1)
@@ -506,14 +575,15 @@ def _write_sheet2(
         9: 16,
         10: 16,
         11: 14,
-        12: 42,
-        13: 14,
-        14: 24,
-        15: 20,
-        16: 18,
+        12: 14,
+        13: 42,
+        14: 14,
+        15: 24,
+        16: 20,
         17: 18,
-        18: 40,
-        19: 34,
+        18: 18,
+        19: 40,
+        20: 34,
     }
     for col, w in widths.items():
         ws.column_dimensions[chr(64 + col)].width = w
@@ -528,6 +598,7 @@ def _resolve_episode_paths(episode_dir: Path) -> Dict[str, Path]:
         "bt_svg": episode_dir / "bt.svg",
         "btstatus": episode_dir / "btstatus.jsonl",
         "missionengine": episode_dir / "missionengine.jsonl",
+        "states": episode_dir / "states_per_frame.jsonl",
     }
 
 
@@ -546,6 +617,7 @@ def generate_workbook(episode_dir: Path, output_path: Path) -> Path:
 
     btstatus_rows = _read_jsonl(paths["btstatus"])
     mission_rows = _read_jsonl(paths["missionengine"])
+    state_rows = _read_jsonl(paths["states"])
 
     outer_step_seconds = float(summary.get("outer_step_seconds", 0.4) or 0.4)
     steps_executed = int(summary.get("steps_executed", 0) or 0)
@@ -560,11 +632,13 @@ def generate_workbook(episode_dir: Path, output_path: Path) -> Path:
         video_time_scale = float(video_duration_seconds) / float(machine_duration_seconds)
 
     bt_suggestions = _build_bt_completion_suggestions(btstatus_rows, outer_step_seconds)
+    state_success_by_step = _build_state_success_by_step(state_rows)
     milestones = _build_mission_milestones(
         mission_rows,
         btstatus_rows,
         outer_step_seconds,
         video_time_scale,
+        state_success_by_step,
     )
 
     wb = Workbook()

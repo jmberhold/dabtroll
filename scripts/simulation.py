@@ -253,6 +253,7 @@ def main() -> None:
     ap.add_argument("--mission-timeout-ms", type=int, default=120000)
     ap.add_argument("--bt-timeout-ms", type=int, default=240000)
     ap.add_argument("--bt-max-new-tokens", type=int, default=1024)
+    ap.add_argument("--status-prompt", default="standard", help="Named status prompt, versioned template ID, or .txt path.")
     ap.add_argument(
         "--frame-every-n-steps",
         type=int,
@@ -340,6 +341,7 @@ def main() -> None:
         mission_host=args.mission_host,
         mission_port=args.mission_port,
         mission_timeout_ms=args.mission_timeout_ms,
+        status_prompt=args.status_prompt,
         bt_timeout_ms=args.bt_timeout_ms,
         bt_max_new_tokens=args.bt_max_new_tokens,
         frame_every_n_steps=args.frame_every_n_steps,

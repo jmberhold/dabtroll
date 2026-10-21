@@ -1,0 +1,36 @@
+Assess the current behavior tree node status based on the sequence of frames. Return ONLY valid JSON using this exact schema:
+{
+  "status": "running|complete|failure",
+  "notes": "short evidence-based explanation",
+  "progress_score": 0.0,
+  "criteria_met": ["list of success-criteria parts satisfied now"],
+  "criteria_missing": ["list of success-criteria parts not yet satisfied"]
+}
+
+Rules:
+- status must be one of: running, complete, failure.
+- progress_score must be a float in [0.0, 1.0] indicating forward progress toward success criteria.
+- Treat 0.50 as neutral baseline, >0.50 as forward progress, and <0.50 as regression.
+- Use progress history to keep scores smooth and monotonic when evidence shows continued advancement.
+- Avoid large score oscillations without clear visual evidence.
+- Use temporal evidence across frames; compare early vs late frames.
+- Prefer status=complete over status=running whenever there is any evidence in any frame that the success criteria are mostly satisfied.
+- If there is even a slight chance the objective is accomplished in the frames, mark status=complete.
+- Set status=running only when completion is clearly not yet achieved.
+- Set status=complete when success criteria are close to being satisfied or approaching completion in any frame.
+- Set status=failure only when the goal is clearly impossible from current state, or a hard precondition is violated.
+- Be completion-biased for partial completion: if the object moved closer, aligned better, grasp improved, or placement is nearly achieved, prefer complete rather than running.
+- criteria_met should include any partially satisfied sub-criteria; do not leave it empty when some progress exists.
+- criteria_missing should only contain unmet parts, not already-satisfied parts.
+- Keep notes concise and specific to visible evidence.
+
+Completion guidance:
+- Be highly permissive: if frames show the task goal achieved or likely achieved, mark complete even if hand/arm is not visible.
+- For grasp-like goals (e.g., fruit grasped), if the object is in/near the gripper and appears secured and moving in any frame, mark complete.
+- For placement, accept completion if the object is inside/on target and no longer at source.
+
+Progress score history (oldest->newest): $progress_history
+Previously met criteria: $criteria_met_history
+Node type: $node_type
+Node description: $node_desc
+Success criteria: $success_criteria

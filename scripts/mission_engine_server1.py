@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
-"""ZMQ mission-engine server that serves BT synthesis and status prompts via Qwen."""
+"""ZMQ mission-engine server that serves BT synthesis and status prompts via VLMs."""
 
 import argparse
 import base64
 import io
+import math
 import os
 import platform
+import signal
+import socket
+import subprocess
 import sys
 import time
 import traceback
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import List
+from typing import Generator, List
+from urllib.parse import urlsplit
 
 import zmq
 from PIL import Image
 
 from mission_engine import (
+    QwenContext,
+    VllmClient,
     generate_text_image_response,
     generate_text_image_response_from_path,
     generate_text_only_response,
@@ -30,6 +38,9 @@ SUPPORTED_MODELS = [
     "Qwen/Qwen3-VL-8B-Instruct",
     "Qwen/Qwen3.5-4B",
     "Qwen/Qwen3.5-9B",
+    "allenai/Molmo2-8B",
+    "google/gemma-4-E4B-it",
+    "qwen38",
 ]
 
 
@@ -39,6 +50,125 @@ def b64_to_pil_rgb(b64_jpg: str) -> Image.Image:
     return Image.open(io.BytesIO(jpg_bytes)).convert("RGB")
 
 
+def _vllm_launch_command(args: argparse.Namespace) -> List[str]:
+    endpoint = urlsplit(args.vllm_base_url.rstrip("/"))
+    if (
+        endpoint.scheme != "http"
+        or endpoint.hostname not in {"127.0.0.1", "localhost"}
+        or endpoint.path != "/v1"
+        or endpoint.query
+        or endpoint.fragment
+        or endpoint.username is not None
+        or endpoint.password is not None
+    ):
+        raise ValueError(
+            "Managed vLLM requires http://127.0.0.1:<port>/v1 (or localhost); "
+            "use --vllm_external for another endpoint."
+        )
+    port = endpoint.port if endpoint.port is not None else 80
+    if port == 0:
+        raise ValueError("Managed vLLM requires a fixed nonzero HTTP port.")
+    model_path = Path(args.vllm_model_path).expanduser().resolve()
+    if not model_path.is_dir():
+        raise FileNotFoundError(
+            f"Qwen3.8 checkpoint directory does not exist: {model_path}. "
+            "Download the quantized checkpoint or set --vllm_model_path."
+        )
+    return [
+        sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", str(model_path),
+        "--served-model-name", args.vllm_model,
+        "--host", endpoint.hostname,
+        "--port", str(port),
+        "--api-key", args.vllm_api_key,
+        "--dtype", "bfloat16",
+        "--max-model-len", "4096",
+        "--max-num-seqs", "1",
+        "--gpu-memory-utilization", "0.90",
+        "--limit-mm-per-prompt", '{"image":1,"video":0}',
+        "--reasoning-parser", "qwen3",
+        "--enforce-eager",
+        "--skip-mm-profiling",
+    ]
+
+
+def _stop_vllm(process: subprocess.Popen) -> None:
+    print(f"[mission_engine_server] stopping managed vLLM pid={process.pid}", flush=True)
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        process.wait()
+        return
+    try:
+        process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        print("[mission_engine_server] vLLM shutdown timed out; killing owned process group", flush=True)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=15)
+
+
+@contextmanager
+def _managed_vllm(
+    args: argparse.Namespace, client: VllmClient,
+) -> Generator[subprocess.Popen, None, None]:
+    from openai import APIConnectionError, APITimeoutError
+
+    timeout = args.vllm_startup_timeout_s
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("--vllm_startup_timeout_s must be a finite positive number.")
+    command = _vllm_launch_command(args)
+    endpoint = urlsplit(client.base_url)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((endpoint.hostname, endpoint.port or 80))
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot start managed vLLM on {endpoint.netloc}: {exc}. "
+            "Stop the existing service, choose another --vllm_base_url port, "
+            "or pass --vllm_external to use an existing vLLM server."
+        ) from exc
+
+    child_env = os.environ.copy()
+    child_env.pop("LD_LIBRARY_PATH", None)
+    child_env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    child_env["PYTHONUNBUFFERED"] = "1"
+    print(
+        f"[mission_engine_server] starting managed vLLM model={args.vllm_model_path} "
+        f"endpoint={client.base_url} CUDA_VISIBLE_DEVICES={child_env.get('CUDA_VISIBLE_DEVICES', '')}",
+        flush=True,
+    )
+    process = subprocess.Popen(command, env=child_env, start_new_session=True)
+    try:
+        deadline = time.monotonic() + timeout
+        last_error = None
+        while True:
+            returncode = process.poll()
+            if returncode is not None:
+                raise RuntimeError(
+                    f"Managed vLLM exited during startup with code {returncode}; "
+                    "see the vLLM output above."
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"vLLM did not become ready within {timeout:g}s; "
+                    "see the vLLM output or increase --vllm_startup_timeout_s."
+                ) from last_error
+            try:
+                client.check_health(timeout_s=min(2.0, remaining))
+                break
+            except (APIConnectionError, APITimeoutError) as exc:
+                last_error = exc
+                time.sleep(min(0.5, remaining))
+        print(f"[mission_engine_server] managed vLLM ready pid={process.pid}", flush=True)
+        yield process
+    finally:
+        _stop_vllm(process)
+
+
 def main():
     """Start REP server, route request modes, and return model responses."""
     ap = argparse.ArgumentParser()
@@ -46,6 +176,35 @@ def main():
     ap.add_argument("--port", type=int, default=5560)
     ap.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct", choices=SUPPORTED_MODELS)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument(
+        "--vllm_base_url", default="http://127.0.0.1:8000/v1",
+        help="Local managed vLLM endpoint, or existing endpoint with --vllm_external.",
+    )
+    ap.add_argument(
+        "--vllm_model_path",
+        default=str(Path.home() / "models/Qwen3.8-27B-W4A16-AutoRound-GPTQ"),
+        help="Local quantized checkpoint loaded by managed vLLM.",
+    )
+    ap.add_argument(
+        "--vllm_startup_timeout_s", type=float, default=600.0,
+        help="Maximum wait for managed vLLM to load the model.",
+    )
+    ap.add_argument(
+        "--vllm_external", action="store_true",
+        help="Use an already running vLLM endpoint instead of starting/stopping one.",
+    )
+    ap.add_argument(
+        "--vllm_model", default="qwen38",
+        help="vLLM served model name (must match --served-model-name).",
+    )
+    ap.add_argument(
+        "--vllm_api_key", default=os.environ.get("OPENAI_API_KEY", "EMPTY"),
+        help="vLLM API key; defaults to OPENAI_API_KEY or EMPTY.",
+    )
+    ap.add_argument(
+        "--vllm_timeout_s", type=float, default=120.0,
+        help="HTTP timeout per vLLM request, in seconds.",
+    )
     ap.add_argument("--max_new_tokens", type=int, default=1024)
     ap.add_argument(
         "--bt_max_new_tokens",
@@ -77,6 +236,19 @@ def main():
     )
     args = ap.parse_args()
 
+    def terminate(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    with ExitStack() as resources:
+        previous_handler = signal.signal(signal.SIGTERM, terminate)
+        resources.callback(signal.signal, signal.SIGTERM, previous_handler)
+        try:
+            _serve(args, resources)
+        except KeyboardInterrupt:
+            print("[mission_engine_server] interrupted; shutting down", flush=True)
+
+
+def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
     try:
         import torch
 
@@ -97,32 +269,66 @@ def main():
     except Exception:
         transformers_version = "unavailable"
 
-    qwen_ctx = load_qwen(
-        enabled=True,
-        model_id=args.model,
-        enable_thinking=bool(args.enable_thinking),
-        enable_flash_attention_2=not bool(args.disable_flash_attention_2),
-    )
+    if args.model == "qwen38":
+        client = VllmClient(
+            base_url=args.vllm_base_url,
+            model=args.vllm_model,
+            api_key=args.vllm_api_key,
+            timeout_s=args.vllm_timeout_s,
+            enable_thinking=bool(args.enable_thinking),
+        )
+        resources.callback(client._client.close)
+        if args.vllm_external:
+            client.check_health()
+            vllm_process = None
+        else:
+            vllm_process = resources.enter_context(_managed_vllm(args, client))
+        qwen_ctx = QwenContext(
+            enabled=True,
+            model_id=args.model,
+            model_family="qwen3_8",
+            enable_thinking=bool(args.enable_thinking),
+            attn_implementation="vllm",
+            vllm_client=client,
+        )
+    else:
+        vllm_process = None
+        qwen_ctx = load_qwen(
+            enabled=True,
+            model_id=args.model,
+            enable_thinking=bool(args.enable_thinking),
+            enable_flash_attention_2=not bool(args.disable_flash_attention_2),
+        )
 
-    zmq_ctx = zmq.Context.instance()
+    zmq_ctx = zmq.Context()
+    resources.callback(zmq_ctx.term)
     sock = zmq_ctx.socket(zmq.REP)
+    resources.callback(sock.close, linger=0)
     if args.rcv_timeout_ms:
         sock.RCVTIMEO = args.rcv_timeout_ms
     sock.bind(f"tcp://{args.host}:{args.port}")
 
     print(f"[mission_engine_server] bound tcp://{args.host}:{args.port}")
+    if qwen_ctx.vllm_client is not None:
+        print(
+            f"[mission_engine_server] backend=vllm base_url={qwen_ctx.vllm_client.base_url} "
+            f"served_model={qwen_ctx.vllm_client.model} video_input=contact_sheet "
+            f"managed={vllm_process is not None} max_image_edge=512; "
+            "GPU/runtime metadata below describes this ZMQ process, not vLLM"
+        )
     print(
         f"[mission_engine_server] model={args.model} family={qwen_ctx.model_family} "
         f"attn={getattr(qwen_ctx, 'attn_implementation', '') or 'default'} "
+        f"cpu_offload_active={bool(getattr(qwen_ctx, 'cpu_offload_active', False))} "
         f"device={args.device} enable_thinking={bool(args.enable_thinking)} "
         f"max_new_tokens={int(args.max_new_tokens)} bt_max_new_tokens={int(args.bt_max_new_tokens)}"
     )
     if qwen_ctx.model_family == "qwen3_5":
         mode_label = "thinking" if bool(args.enable_thinking) else "instruct_non_thinking"
         print(f"[mission_engine_server] qwen3.5_mode={mode_label}")
-    if bool(args.enable_thinking):
+    if bool(args.enable_thinking) and qwen_ctx.model_family == "qwen3_5":
         print("[mission_engine_server] note: enable_thinking=True may increase latency")
-    if bool(args.disable_flash_attention_2):
+    if bool(args.disable_flash_attention_2) and qwen_ctx.model_family == "qwen3_vl":
         print("[mission_engine_server] note: flash_attention_2 disabled; throughput may drop")
     print(
         "[mission_engine_server] env "
@@ -152,8 +358,21 @@ def main():
             print(f"[mission_engine_server] startup warmup skipped due to error: {warmup_exc}")
 
     while True:
+        if vllm_process is not None:
+            returncode = vllm_process.poll()
+            if returncode is not None:
+                raise RuntimeError(f"Managed vLLM exited with code {returncode}; stopping mission server.")
+            if not sock.poll(1000):
+                continue
         try:
             req = sock.recv_json()
+
+            def _effective_non_bt_max_tokens(default_tokens: int) -> int:
+                try:
+                    requested = int(req.get("max_new_tokens", 0) or 0)
+                except Exception:
+                    requested = 0
+                return requested if requested > 0 else int(default_tokens)
 
             image_path = str(req.get("image_path", "")).strip()
             frames_b64: List[str] = req.get("frames_b64", [])
@@ -165,6 +384,8 @@ def main():
             )
 
             if mode == "health":
+                if qwen_ctx.vllm_client is not None:
+                    qwen_ctx.vllm_client.check_health()
                 sock.send_json(
                     {
                         "ok": True,
@@ -173,6 +394,12 @@ def main():
                         "platform": platform.platform(),
                         "model": args.model,
                         "model_family": qwen_ctx.model_family,
+                        "backend": "vllm" if qwen_ctx.vllm_client is not None else "transformers",
+                        "vllm_base_url": qwen_ctx.vllm_client.base_url if qwen_ctx.vllm_client else None,
+                        "vllm_model": qwen_ctx.vllm_client.model if qwen_ctx.vllm_client else None,
+                        "vllm_managed": vllm_process is not None,
+                        "vllm_pid": vllm_process.pid if vllm_process is not None else None,
+                        "video_input": "contact_sheet" if qwen_ctx.vllm_client else "frames",
                         "enable_thinking": bool(args.enable_thinking),
                         "device_arg": args.device,
                         "torch_version": torch_version,
@@ -199,12 +426,13 @@ def main():
 
             t0 = time.time()
             prompt_text = str(req.get("prompt_text", "")).strip()
+            effective_non_bt_tokens = _effective_non_bt_max_tokens(args.max_new_tokens)
 
             if mode == "text":
                 text = generate_text_only_response(
                     qwen_ctx,
                     prompt_text=prompt_text,
-                    max_new_tokens=int(args.max_new_tokens),
+                    max_new_tokens=int(effective_non_bt_tokens),
                 )
                 dt = time.time() - t0
                 sock.send_json({"ok": True, "mode": "scene", "text": text, "latency_s": dt})
@@ -270,14 +498,14 @@ def main():
                         qwen_ctx,
                         image_path=image_path,
                         prompt_text=prompt_text,
-                        max_new_tokens=int(args.max_new_tokens),
+                        max_new_tokens=int(effective_non_bt_tokens),
                     )
                 else:
                     text = generate_text_image_response(
                         qwen_ctx,
                         image=image,
                         prompt_text=prompt_text,
-                        max_new_tokens=int(args.max_new_tokens),
+                        max_new_tokens=int(effective_non_bt_tokens),
                     )
             elif mode in {"text_video", "video"}:
                 if not prompt_text:
@@ -287,7 +515,7 @@ def main():
                     qwen_ctx,
                     frames=images,
                     prompt_text=prompt_text,
-                    max_new_tokens=int(args.max_new_tokens),
+                    max_new_tokens=int(effective_non_bt_tokens),
                 )
             else:
                 if not prompt_text:
@@ -297,14 +525,14 @@ def main():
                         qwen_ctx,
                         image_path=image_path,
                         prompt_text=prompt_text,
-                        max_new_tokens=int(args.max_new_tokens),
+                        max_new_tokens=int(effective_non_bt_tokens),
                     )
                 else:
                     text = generate_text_image_response(
                         qwen_ctx,
                         image=image,
                         prompt_text=prompt_text,
-                        max_new_tokens=int(args.max_new_tokens),
+                        max_new_tokens=int(effective_non_bt_tokens),
                     )
 
             dt = time.time() - t0

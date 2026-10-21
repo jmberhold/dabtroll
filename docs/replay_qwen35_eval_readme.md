@@ -1,6 +1,22 @@
-# Qwen3.5 Replay Eval README
+# VIBTARVE replay evaluation: Qwen3.5 and shared infrastructure
 
-This guide explains how to replay mission-engine status evaluation on existing DABTROLL episode artifacts without rerunning simulation.
+This guide explains how to replay mission-engine status evaluation for
+[VLM-Initiated Behavior Tree Auditing of Robot VLA Execution (VIBTARVE)](vibtarve.md)
+on recorded episodes without rerunning or changing the VLA execution.
+The DABTROLL/Qwen3.5 names in modules and artifacts are legacy compatibility
+identifiers; the research effort is VIBTARVE.
+
+Run from the repository root in an activated analysis/replay environment
+([setup](getting_started.md)). Shell runners use the active `python`, or
+`PYTHON_BIN` if set; they do not activate a workstation-specific conda environment.
+These legacy repair commands can replace model sheets. For new research runs
+use the protected prompt-experiment runner and keep reviewed originals intact.
+
+For versioned, sequential prompt tuning across models, use the
+[status-prompt experiment guide](status_prompt_experiments.md). It covers the
+Qwen3.8 episode-1 baseline, immutable v1-v5 revisions, shared `--status-prompt`
+selection, provenance, and review-sheet safety. The existing Qwen3.5 commands
+below retain their defaults.
 
 The current workflow supports both:
 - Sheet 3 replay (`sheet3_qwen3_5_MissionEngine_Review`), and
@@ -13,7 +29,7 @@ Use these when restarting after a CUDA stop. Set `PREV_RUN` to the last run dire
 ### 1) Resume Sheet 3
 
 ```bash
-PREV_RUN=/home/mark/dabtroll/data/logs/replay_episodes_2_21_mod1_runs/<PREV_RUN_TAG>
+PREV_RUN="$PWD/data/logs/replay_episodes_2_21_mod1_runs/<PREV_RUN_TAG>"
 PENDING="$PREV_RUN/pending_current.txt"
 RUN_TAG=sheet3_rerun_resume_$(date -u +%Y%m%dT%H%M%SZ)
 
@@ -24,13 +40,13 @@ STOP_ON_CUDA=1 \
 MISSION_TIMEOUT_MS=30000 \
 EPISODE_MANIFEST="$PENDING" \
 AUTO_SKIP_COMPLETED=0 \
-/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh "$RUN_TAG"
+bash scripts/run_replay_episodes_2_21_mod1_batched.sh "$RUN_TAG"
 ```
 
 ### 2) Resume Sheet 4 (mod1)
 
 ```bash
-PREV_RUN=/home/mark/dabtroll/data/logs/replay_episodes_2_21_mod1_runs/<PREV_RUN_TAG>
+PREV_RUN="$PWD/data/logs/replay_episodes_2_21_mod1_runs/<PREV_RUN_TAG>"
 PENDING="$PREV_RUN/pending_current.txt"
 RUN_TAG=sheet4_rerun_resume_$(date -u +%Y%m%dT%H%M%SZ)
 
@@ -41,7 +57,7 @@ STOP_ON_CUDA=1 \
 MISSION_TIMEOUT_MS=30000 \
 EPISODE_MANIFEST="$PENDING" \
 AUTO_SKIP_COMPLETED=0 \
-/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh "$RUN_TAG"
+bash scripts/run_replay_episodes_2_21_mod1_batched.sh "$RUN_TAG"
 ```
 
 ## Current Behavior (Important)
@@ -92,8 +108,8 @@ The review sheet now includes `sim_success` (from `states_per_frame.jsonl` when 
 Default frame-driven run (recommended):
 
 ```bash
-/home/mark/miniconda3/envs/robocasa_uv_conda/bin/python scripts/replay_qwen35_bt_eval.py \
-  --episode-dir /home/mark/dabtroll/data/logs/<episode_dir> \
+python scripts/replay_qwen35_bt_eval.py \
+  --episode-dir data/logs/<episode_dir> \
   --mission-host 127.0.0.1 \
   --mission-port 5560 \
   --mission-timeout-ms 120000 \
@@ -104,8 +120,8 @@ Default frame-driven run (recommended):
 Sheet 4 mod1 replay for a single episode:
 
 ```bash
-/home/mark/miniconda3/envs/robocasa_uv_conda/bin/python scripts/replay_qwen35_bt_eval.py \
-  --episode-dir /home/mark/dabtroll/data/logs/<episode_dir> \
+python scripts/replay_qwen35_bt_eval.py \
+  --episode-dir data/logs/<episode_dir> \
   --mission-host 127.0.0.1 \
   --mission-port 5560 \
   --mission-timeout-ms 30000 \
@@ -118,9 +134,9 @@ Sheet 4 mod1 replay for a single episode:
 Repeat `--episode-dir`:
 
 ```bash
-/home/mark/miniconda3/envs/robocasa_uv_conda/bin/python scripts/replay_qwen35_bt_eval.py \
-  --episode-dir /home/mark/dabtroll/data/logs/<episode_dir_1> \
-  --episode-dir /home/mark/dabtroll/data/logs/<episode_dir_2> \
+python scripts/replay_qwen35_bt_eval.py \
+  --episode-dir data/logs/<episode_dir_1> \
+  --episode-dir data/logs/<episode_dir_2> \
   --mission-host 127.0.0.1 \
   --mission-port 5560 \
   --window-source frames
@@ -151,8 +167,8 @@ BATCH_SIZE=20 \
 STOP_ON_CUDA=1 \
 MISSION_TIMEOUT_MS=30000 \
 AUTO_SKIP_COMPLETED=0 \
-EPISODE_MANIFEST=/home/mark/dabtroll/data/logs/<manifest>.txt \
-/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh <RUN_TAG>
+EPISODE_MANIFEST="$PWD/data/logs/<manifest>.txt" \
+bash scripts/run_replay_episodes_2_21_mod1_batched.sh <RUN_TAG>
 ```
 
 ### Sheet 4 batch rerun (mod1)
@@ -164,8 +180,8 @@ BATCH_SIZE=20 \
 STOP_ON_CUDA=1 \
 MISSION_TIMEOUT_MS=30000 \
 AUTO_SKIP_COMPLETED=0 \
-EPISODE_MANIFEST=/home/mark/dabtroll/data/logs/<manifest>.txt \
-/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh <RUN_TAG>
+EPISODE_MANIFEST="$PWD/data/logs/<manifest>.txt" \
+bash scripts/run_replay_episodes_2_21_mod1_batched.sh <RUN_TAG>
 ```
 
 ## Resume Workflow (Checkpoint Safe)
@@ -180,7 +196,7 @@ Each batch run writes:
 To resume after CUDA stop, point `EPISODE_MANIFEST` to the latest `pending_current.txt`:
 
 ```bash
-PREV_RUN=/home/mark/dabtroll/data/logs/replay_episodes_2_21_mod1_runs/<PREV_RUN_TAG>
+PREV_RUN="$PWD/data/logs/replay_episodes_2_21_mod1_runs/<PREV_RUN_TAG>"
 PENDING="$PREV_RUN/pending_current.txt"
 
 RUN_TAG=sheet3_rerun_resume_$(date -u +%Y%m%dT%H%M%SZ)
@@ -191,7 +207,7 @@ STOP_ON_CUDA=1 \
 MISSION_TIMEOUT_MS=30000 \
 EPISODE_MANIFEST="$PENDING" \
 AUTO_SKIP_COMPLETED=0 \
-/home/mark/dabtroll/scripts/run_replay_episodes_2_21_mod1_batched.sh "$RUN_TAG"
+bash scripts/run_replay_episodes_2_21_mod1_batched.sh "$RUN_TAG"
 ```
 
 ## CLI Options (`replay_qwen35_bt_eval.py`)
@@ -205,6 +221,7 @@ Connection:
 Episode selection:
 
 - `--episode-dir` (repeatable)
+- `--result-json <path>` (optional separate CLI result, immune to diagnostic stdout)
 
 Window/timing:
 
