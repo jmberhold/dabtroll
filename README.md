@@ -1,4 +1,31 @@
-# DABTROLL Runtime README
+# DABTROLL research framework
+
+DABTROLL combines simulation, VLM-generated behavior trees (BTs), mission-status
+replay, and human evaluation. This repository contains code and curated examples;
+recordings, model weights, and local environments are **not bundled with Git**.
+
+## Start here
+
+- [Getting started](docs/getting_started.md): CPU analysis/tests, environments,
+  data prerequisites, model replay, and new simulations.
+- [BTAudit2 dataset guide](docs/btaudit2_dataset.md): artifact schema, notation,
+  frozen cohorts, provenance audits, and human-review contributions.
+- [Research tutorial](notebooks/btaudit2_research_tutorial.ipynb): read-only
+  structure/provenance inspection and episode-1 comparison charts.
+- [Contributing](CONTRIBUTING.md): code/testing, notebook policy, and data safety.
+- [Citations and unresolved licensing](docs/research_attribution.md): upstream
+  attribution and publication/distribution requirements.
+
+The 2026-10-21 snapshot has 488 recordings: 24 episode-1 prompt-tuning recordings
+and 464 episode-2--21 recordings. Selected Qwen3.8 prompt v4 has verified model
+coverage on all 464 evaluation recordings (3,690 clean responses). Coverage is
+not an accuracy claim or proof of complete human review. See the dataset guide
+for denominators, mixed-budget baseline caveats, and reproducibility limits.
+
+**Licensing is unresolved:** no code or dataset license has been selected.
+Do not assume linked upstream assets share a license or may be redistributed.
+
+## Runtime reference
 
 This README documents the scripts currently applicable to running DABTROLL simulation from `scripts/simulation.py`, including minimum required arguments, parameter bounds, and semantic indexing/query workflow.
 
@@ -10,7 +37,9 @@ References:
 
 ## 0. Current Contributor Focus: Contribution 1
 
-Contribution 1 in this repository is the btaudit evaluation workflow plus robust Qwen3.5 replay validation.
+Contribution 1 includes the btaudit/btaudit2 evaluation workflow and multi-model
+replay validation, including versioned Qwen3.8 prompt experiments. The older
+Qwen3.5 paths below remain supported reference workflows.
 
 Primary goals:
 - run `--test btaudit` simulation episodes to generate artifacts/workbooks;
@@ -34,8 +63,8 @@ python scripts/simulation.py \
   --mode dabtroll \
   --env-name gr1_unified/PosttrainPnPNovelFromPlacematToPlateSplitA_GR1ArmsAndWaistFourierHands_Env \
   --n-episodes 10 \
-  --project-root /home/mark/dabtroll \
-  --isaac-gr00t-root /home/mark/dev/Isaac-GR00T
+  --project-root "$PWD" \
+  --isaac-gr00t-root "$ISAAC_GROOT_ROOT"
 ```
 
 ## 2. Minimum Required Inputs
@@ -69,15 +98,52 @@ uv run python gr00t/eval/run_gr00t_server.py \
 Mission engine server:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python dabtroll/scripts/mission_engine_server1.py \
+CUDA_VISIBLE_DEVICES=1 python scripts/mission_engine_server1.py \
   --host 127.0.0.1 --port 5560 --model "Qwen/Qwen3-VL-8B-Instruct"
 ```
 
 Mission engine details and options are documented in [docs/mission_engine_server.md](docs/mission_engine_server.md).
 
+For the local **Qwen3.8-27B-W4A16-AutoRound-GPTQ** checkpoint
+[published by Vishva007](https://huggingface.co/Vishva007/Qwen3.8-27B-W4A16-AutoRound-GPTQ),
+use the [`qwen38` installation and startup guide](docs/mission_engine_server.md#qwen38-27b-w4a16-autoround-gptq-startup-vllm-cuda1).
+It covers the fresh Python 3.12 conda environment, corrected vLLM 0.32.0 /
+Torch / TorchCodec CUDA 12.9 package set, checkpoint download, optional notebook
+kernel, and end-to-end health checks.
+Start the mission server on GPU 1 with one command; it launches and owns vLLM:
+
+```bash
+conda activate qwen38
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 \
+env -u LD_LIBRARY_PATH \
+python scripts/mission_engine_server1.py \
+  --model qwen38 \
+  --host 127.0.0.1 --port 5560 \
+  --device cuda \
+  --max_new_tokens 1024 --bt_max_new_tokens 1024
+```
+
+The server waits for vLLM readiness before binding ZMQ and stops its owned
+backend on Ctrl-C or SIGTERM. vLLM uses child/worker processes internally, but
+no second terminal or manually managed service is required. Stop any old
+mission/vLLM service first to free GPU 1 and ports 5560/8000. To intentionally
+reuse an existing endpoint instead, pass `--vllm_external`.
+
+Simulation still connects to ZMQ port **5560**, not HTTP port 8000. Multi-frame
+Qwen3.8 status requests use one labeled chronological contact sheet to retain
+the tested vLLM one-image limit; this differs from separate-frame evaluation.
+Existing Transformers model startup commands are unchanged.
+
 Data management and semantic indexing details are documented in [docs/knowledge_base.md](docs/knowledge_base.md).
 
 For Contribution 1 strict replay details, see [docs/replay_qwen35_eval_readme.md](docs/replay_qwen35_eval_readme.md).
+
+For model-specific prompt tuning without renaming Python functions, see the
+[status-prompt experiment guide](docs/status_prompt_experiments.md). Use
+`--status-prompt qwen38_v1` in live simulation, or
+`STATUS_PROMPT=qwen38_v1 bash scripts/run_replay_btaudit2_qwen38_episode1.sh`
+for the Qwen3.8 episode-1 baseline. Each revision keeps its own source snapshot,
+hash, replay artifacts, and review sheet; review v1 before creating v2-v5.
 
 ## 3. Runtime Execution Path
 

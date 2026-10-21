@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -u -o pipefail
 
-# Ensure conda environment is activated
-eval "$(conda shell.bash hook)"
-conda activate robocasa_uv_conda
-
-PYTHON_BIN="${PYTHON_BIN:-/home/mark/miniconda3/envs/robocasa_uv_conda/bin/python}"
-REPLAY_SCRIPT="${REPLAY_SCRIPT:-/home/mark/dabtroll/scripts/replay_qwen35_bt_eval.py}"
-LOGS_ROOT="${LOGS_ROOT:-/home/mark/dabtroll/data/logs}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+REPLAY_SCRIPT="${REPLAY_SCRIPT:-$SCRIPT_DIR/replay_qwen35_bt_eval.py}"
+LOGS_ROOT="${LOGS_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)/data/logs}"
 MISSION_HOST="${MISSION_HOST:-127.0.0.1}"
 MISSION_PORT="${MISSION_PORT:-5560}"
 MISSION_TIMEOUT_MS="${MISSION_TIMEOUT_MS:-30000}"
 REVIEW_SHEET_NAME="${REVIEW_SHEET_NAME:-sheet4_qwen3_5_mod1_MissionEngine_Review}"
+STATUS_PROMPT="${STATUS_PROMPT:-qwen3_5}"
+MODEL_LABEL="${MODEL_LABEL:-Qwen/Qwen3.5-9B}"
+OUTPUT_PREFIX="${OUTPUT_PREFIX:-qwen_3_5}"
 WINDOW_SOURCE="${WINDOW_SOURCE:-manifest}"
+STATUS_EVAL_SECONDS="${STATUS_EVAL_SECONDS:-}"
+STATUS_WINDOW_SECONDS="${STATUS_WINDOW_SECONDS:-}"
 BATCH_SIZE="${BATCH_SIZE:-10}"
 TIMEOUT_SECS="${TIMEOUT_SECS:-1200}"
 STOP_ON_CUDA="${STOP_ON_CUDA:-1}"
@@ -23,6 +25,14 @@ HISTORY_RUNS_ROOT="${HISTORY_RUNS_ROOT:-${LOGS_ROOT}/replay_episodes_2_21_mod1_r
 run_tag="${1:-$(date -u +%Y%m%dT%H%M%SZ)}"
 run_root="${LOGS_ROOT}/replay_episodes_2_21_mod1_runs/${run_tag}"
 mkdir -p "$run_root"
+
+# Guardrail: Molmo2 campaigns must use the Molmo2 status prompt.
+if [[ "$REVIEW_SHEET_NAME" == *"molmo2"* || "$OUTPUT_PREFIX" == molmo2* ]]; then
+  if [[ "$STATUS_PROMPT" != "molmo2_8b" ]]; then
+    echo "Configuration error: Molmo2 run detected but STATUS_PROMPT is '$STATUS_PROMPT'. Expected 'molmo2_8b'."
+    exit 1
+  fi
+fi
 
 eligible_manifest="$run_root/eligible_episodes_2_21_manifest.txt"
 target_manifest="$run_root/target_manifest.txt"
@@ -150,7 +160,12 @@ completed_manifest=$completed_manifest
 error_report=$error_report
 batch_index=$batch_index_path
 review_sheet_name=$REVIEW_SHEET_NAME
+status_prompt=$STATUS_PROMPT
+model_label=$MODEL_LABEL
+output_prefix=$OUTPUT_PREFIX
 window_source=$WINDOW_SOURCE
+status_eval_seconds=$STATUS_EVAL_SECONDS
+status_window_seconds=$STATUS_WINDOW_SECONDS
 batch_size=$BATCH_SIZE
 target_count=$target_count
 auto_skip_completed=$AUTO_SKIP_COMPLETED
@@ -209,13 +224,25 @@ while true; do
     idx=$((idx + 1))
     echo "[$batch_tag:$idx/$batch_total] RUN $ep" | tee -a "$batch_report"
 
+    extra_timing_args=()
+    if [[ -n "$STATUS_EVAL_SECONDS" ]]; then
+      extra_timing_args+=(--status-eval-seconds "$STATUS_EVAL_SECONDS")
+    fi
+    if [[ -n "$STATUS_WINDOW_SECONDS" ]]; then
+      extra_timing_args+=(--status-window-seconds "$STATUS_WINDOW_SECONDS")
+    fi
+
     out=$(timeout -k 15 "$TIMEOUT_SECS" "$PYTHON_BIN" "$REPLAY_SCRIPT" \
       --episode-dir "$ep" \
       --mission-host "$MISSION_HOST" \
       --mission-port "$MISSION_PORT" \
       --mission-timeout-ms "$MISSION_TIMEOUT_MS" \
       --review-sheet-name "$REVIEW_SHEET_NAME" \
-      --window-source "$WINDOW_SOURCE" 2>&1)
+      --status-prompt "$STATUS_PROMPT" \
+      --model-label "$MODEL_LABEL" \
+      --output-prefix "$OUTPUT_PREFIX" \
+      --window-source "$WINDOW_SOURCE" \
+      "${extra_timing_args[@]}" 2>&1)
     code=$?
 
     if [[ "$code" -eq 0 ]]; then
@@ -369,7 +396,12 @@ completed_manifest=$completed_manifest
 error_report=$error_report
 batch_index=$batch_index_path
 review_sheet_name=$REVIEW_SHEET_NAME
+status_prompt=$STATUS_PROMPT
+model_label=$MODEL_LABEL
+output_prefix=$OUTPUT_PREFIX
 window_source=$WINDOW_SOURCE
+status_eval_seconds=$STATUS_EVAL_SECONDS
+status_window_seconds=$STATUS_WINDOW_SECONDS
 batch_size=$BATCH_SIZE
 target_count=$target_count
 auto_skip_completed=$AUTO_SKIP_COMPLETED

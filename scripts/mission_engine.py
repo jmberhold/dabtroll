@@ -1,16 +1,25 @@
 from __future__ import annotations
 
-"""Core mission engine primitives: Qwen I/O, BT runner, and offline mission replay."""
+"""Core mission engine primitives: VLM I/O, BT runner, and offline mission replay."""
 
+import base64
 import gc
+import io
 import json
+import math
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from knowledge_base import KnowledgeBase
+
+if TYPE_CHECKING:
+    from openai import OpenAI
+    from openai.types.chat import ChatCompletionContentPartParam
+    from PIL import Image
 
 EXECUTION_NODE_TYPES = {"action", "condition"}
 
@@ -25,10 +34,132 @@ class QwenContext:
     model_family: str = "qwen3_vl"
     enable_thinking: bool = False
     attn_implementation: str = ""
+    cpu_offload_active: bool = False
+    vllm_client: Optional[VllmClient] = None
+
+
+def _prepare_vllm_image(images: List[Image.Image]) -> Image.Image:
+    """Fit one image or a labeled chronological contact sheet into 512 pixels."""
+    from PIL import Image, ImageDraw, ImageOps
+
+    max_edge = 512
+    if len(images) == 1:
+        image = ImageOps.exif_transpose(images[0]).convert("RGB")
+        image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+        return image
+
+    columns = math.ceil(math.sqrt(len(images)))
+    rows = math.ceil(len(images) / columns)
+    cell_width = max_edge // columns
+    cell_height = max_edge // rows
+    label_height = 18
+    if cell_width < 32 or cell_height <= label_height:
+        raise ValueError("Too many frames for a readable 512px contact sheet; reduce the status window.")
+    sheet = Image.new("RGB", (max_edge, rows * cell_height), "white")
+    draw = ImageDraw.Draw(sheet)
+    for index, source in enumerate(images):
+        x = (index % columns) * cell_width
+        y = (index // columns) * cell_height
+        draw.text((x + 2, y + 2), f"Frame {index + 1}", fill="black")
+        thumbnail = ImageOps.contain(
+            ImageOps.exif_transpose(source).convert("RGB"),
+            (cell_width, cell_height - label_height),
+            Image.Resampling.LANCZOS,
+        )
+        sheet.paste(thumbnail, (x, y + label_height))
+    return sheet
+
+
+@dataclass
+class VllmClient:
+    """HTTP inference using the same OpenAI SDK as the direct smoke test."""
+    base_url: str = "http://127.0.0.1:8000/v1"
+    model: str = "qwen38"
+    api_key: str = field(default="EMPTY", repr=False)
+    timeout_s: float = 120.0
+    enable_thinking: bool = False
+    _client: OpenAI = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        from openai import OpenAI
+
+        self.base_url = self.base_url.rstrip("/")
+        parsed = urlsplit(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("vLLM base URL must be an HTTP(S) URL including /v1.")
+        if not math.isfinite(self.timeout_s) or self.timeout_s <= 0:
+            raise ValueError("vLLM timeout must be a finite positive number.")
+        self._client = OpenAI(
+            base_url=self.base_url, api_key=self.api_key,
+            timeout=self.timeout_s, max_retries=0,
+        )
+
+    def check_health(self, timeout_s: Optional[float] = None) -> None:
+        models = self._client.models.list(timeout=timeout_s or self.timeout_s).data
+        if not models or not any(model.id == self.model for model in models):
+            raise RuntimeError(
+                f"vLLM does not advertise served model {self.model!r}; "
+                "check --served-model-name and --vllm_model."
+            )
+
+    def generate(
+        self,
+        prompt_text: str,
+        images: List[Image.Image],
+        max_new_tokens: int,
+    ) -> str:
+        if max_new_tokens <= 0:
+            raise ValueError("max_new_tokens must be positive.")
+        content: List[ChatCompletionContentPartParam] = []
+        if images:
+            image = _prepare_vllm_image(images)
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=90)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{encoded}"},
+            })
+        if len(images) > 1:
+            prompt_text = (
+                f"The image is a contact sheet of {len(images)} chronological frames, "
+                "ordered left-to-right, then top-to-bottom. Frame 1 is oldest; "
+                f"Frame {len(images)} is newest. Use the sequence to evaluate changes.\n\n"
+                + prompt_text
+            )
+        content.append({"type": "text", "text": prompt_text})
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": content}],
+            max_tokens=int(max_new_tokens),
+            temperature=0.7,
+            top_p=0.8,
+            presence_penalty=1.5,
+            extra_body={
+                "top_k": 20,
+                "min_p": 0.0,
+                "repetition_penalty": 1.0,
+                "chat_template_kwargs": {"enable_thinking": self.enable_thinking},
+            },
+        )
+        if not response.choices:
+            raise RuntimeError("vLLM returned no valid completion choices.")
+        choice = response.choices[0]
+        if choice.finish_reason == "length":
+            raise RuntimeError(
+                "vLLM completion hit the token limit; increase the generation budget "
+                "within --max-model-len or reduce the prompt/image size."
+            )
+        text = choice.message.content
+        if not isinstance(text, str) or not text.strip():
+            raise RuntimeError(
+                "vLLM returned no assistant content (reasoning-only or empty completion)."
+            )
+        return text.strip()
 
 
 def _detect_model_family(model_id: str) -> str:
-    """Infer Qwen family from AutoConfig when possible, else from model id text."""
+    """Infer the supported model family from config or model id text."""
     try:
         from transformers import AutoConfig
 
@@ -38,10 +169,18 @@ def _detect_model_family(model_id: str) -> str:
             return "qwen3_5"
         if model_type == "qwen3_vl":
             return "qwen3_vl"
+        if model_type in {"molmo", "molmo2"}:
+            return "molmo2"
+        if model_type == "gemma3":
+            return "gemma4"
     except Exception:
         pass
 
     mid = (model_id or "").lower()
+    if "molmo2" in mid:
+        return "molmo2"
+    if "gemma-4" in mid:
+        return "gemma4"
     if "qwen3.5" in mid:
         return "qwen3_5"
     return "qwen3_vl"
@@ -55,6 +194,12 @@ def _load_model_class(model_family: str):
     if model_family == "qwen3_vl":
         from transformers import Qwen3VLForConditionalGeneration
         return Qwen3VLForConditionalGeneration
+    if model_family == "molmo2":
+        from transformers import AutoModelForImageTextToText
+        return AutoModelForImageTextToText
+    if model_family == "gemma4":
+        from transformers import AutoModelForMultimodalLM
+        return AutoModelForMultimodalLM
     raise ValueError(f"Unsupported model family: {model_family}")
 
 
@@ -67,7 +212,8 @@ def load_qwen(
     """
     Safer local-HF loader:
     - Qwen3-VL uses float16 and can enable flash_attention_2 on CUDA when available
-    - Qwen3.5 support remains available if the class exists
+    - Qwen3.5 prefers bfloat16 on CUDA
+    - Molmo2 uses its remote model code and bfloat16 on CUDA
     """
     ctx = QwenContext(
         enabled=bool(enabled),
@@ -120,7 +266,7 @@ def load_qwen(
                 low_cpu_mem_usage=False,
             ).to("cpu")
             ctx.attn_implementation = "eager"
-    else:
+    elif ctx.model_family == "qwen3_5":
         if torch.cuda.is_available():
             # Prefer bf16 for qwen3.5 on modern GPUs, but fall back to fp16
             # for environments where bf16 kernels are unavailable/unstable.
@@ -147,13 +293,82 @@ def load_qwen(
             ).to("cpu")
         ctx.attn_implementation = "default"
 
-    ctx.processor = AutoProcessor.from_pretrained(model_id)
+    elif ctx.model_family == "molmo2":
+        model_kwargs = {
+            "trust_remote_code": True,
+            "low_cpu_mem_usage": True,
+        }
+        if torch.cuda.is_available():
+            model_kwargs.update({
+                "dtype": torch.bfloat16,
+                "device_map": "auto",
+            })
+            ctx.model = model_cls.from_pretrained(model_id, **model_kwargs)
+        else:
+            model_kwargs.update({
+                "dtype": torch.float32,
+                "device_map": None,
+            })
+            ctx.model = model_cls.from_pretrained(model_id, **model_kwargs).to("cpu")
+        ctx.attn_implementation = "default"
+
+    else:
+        # Gemma 4 E4B IT: prefer full single-GPU placement first to avoid
+        # CPU offload latency. Fall back to auto placement if VRAM is insufficient.
+        if torch.cuda.is_available():
+            loaded = False
+            for dtype in (torch.bfloat16, torch.float16):
+                try:
+                    ctx.model = model_cls.from_pretrained(
+                        model_id,
+                        torch_dtype=dtype,
+                        device_map={"": 0},
+                        low_cpu_mem_usage=True,
+                    )
+                    loaded = True
+                    break
+                except Exception:
+                    loaded = False
+            if not loaded:
+                ctx.model = model_cls.from_pretrained(
+                    model_id,
+                    dtype="auto",
+                    device_map="auto",
+                    low_cpu_mem_usage=True,
+                )
+        else:
+            ctx.model = model_cls.from_pretrained(
+                model_id,
+                torch_dtype=torch.float32,
+                low_cpu_mem_usage=True,
+            ).to("cpu")
+        ctx.attn_implementation = "default"
+
+    hf_device_map = getattr(ctx.model, "hf_device_map", None)
+    if isinstance(hf_device_map, dict):
+        ctx.cpu_offload_active = any(str(device).startswith("cpu") for device in hf_device_map.values())
+    else:
+        ctx.cpu_offload_active = False
+
+    processor_kwargs: Dict[str, Any] = {}
+    if ctx.model_family == "molmo2":
+        processor_kwargs.update({
+            "trust_remote_code": True,
+            "padding_side": "left",
+        })
+    ctx.processor = AutoProcessor.from_pretrained(model_id, **processor_kwargs)
+    ctx.model.eval()
     return ctx
 
 
 def release_qwen_gpu(ctx: QwenContext) -> None:
     """Release model resources and clear CUDA cache for long-lived processes."""
     if not ctx or not ctx.enabled:
+        return
+    if ctx.vllm_client is not None:
+        ctx.vllm_client._client.close()
+        ctx.vllm_client = None
+        ctx.enabled = False
         return
     try:
         import torch
@@ -246,11 +461,18 @@ def run_qwen_generation_with_image_path(
     if not ctx or not ctx.enabled:
         return None
 
+    image_value: Any = str(image_path)
+    if ctx.model_family == "molmo2":
+        from PIL import Image
+
+        with Image.open(image_path) as source_image:
+            image_value = source_image.convert("RGB")
+
     messages = [
         {
             "role": "user",
             "content": [
-                {"type": "image", "image": str(image_path)},
+                {"type": "image", "image": image_value},
                 {"type": "text", "text": str(prompt_text)},
             ],
         }
@@ -295,6 +517,20 @@ def run_qwen_generation_with_image(
             if part.get("type") == "text":
                 prompt_text = str(part.get("text", ""))
                 break
+
+    if ctx.model_family == "molmo2":
+        molmo_messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt_text},
+                {"type": "image", "image": image},
+            ],
+        }]
+        return run_qwen_generation(
+            ctx,
+            messages=molmo_messages,
+            max_new_tokens=max_new_tokens,
+        )
 
     if ctx.model_family == "qwen3_vl":
         tmp_path = None
@@ -351,6 +587,21 @@ def run_qwen_generation_with_images(
     images = list(images or [])
     if not images:
         return None
+
+    if ctx.model_family == "molmo2":
+        prompt_text = ""
+        if messages:
+            for part in messages[0].get("content", []):
+                if part.get("type") == "text":
+                    prompt_text = str(part.get("text", ""))
+                    break
+        molmo_content = [{"type": "text", "text": prompt_text}]
+        molmo_content.extend({"type": "image", "image": image} for image in images)
+        return run_qwen_generation(
+            ctx,
+            messages=[{"role": "user", "content": molmo_content}],
+            max_new_tokens=max_new_tokens,
+        )
 
     if ctx.model_family == "qwen3_vl" and len(images) == 1:
         return run_qwen_generation_with_image(
@@ -413,6 +664,8 @@ def generate_text_only_response(
     max_new_tokens: int = 768,
 ) -> Optional[str]:
     """Convenience wrapper for text-only model response generation."""
+    if ctx and ctx.enabled and ctx.vllm_client is not None:
+        return ctx.vllm_client.generate(prompt_text, [], max_new_tokens)
     messages = build_text_messages(prompt_text)
     return run_qwen_generation(ctx, messages, max_new_tokens=max_new_tokens)
 
@@ -424,6 +677,8 @@ def generate_text_image_response(
     max_new_tokens: int = 768,
 ) -> Optional[str]:
     """Convenience wrapper for image+text response generation from PIL image."""
+    if ctx and ctx.enabled and ctx.vllm_client is not None:
+        return ctx.vllm_client.generate(prompt_text, [image], max_new_tokens)
     messages = build_text_image_messages(prompt_text)
     return run_qwen_generation_with_image(
         ctx,
@@ -440,6 +695,11 @@ def generate_text_image_response_from_path(
     max_new_tokens: int = 768,
 ) -> Optional[str]:
     """Convenience wrapper for image+text response generation from image path."""
+    if ctx and ctx.enabled and ctx.vllm_client is not None:
+        from PIL import Image
+
+        with Image.open(image_path) as image:
+            return ctx.vllm_client.generate(prompt_text, [image], max_new_tokens)
     return run_qwen_generation_with_image_path(
         ctx,
         image_path=image_path,
@@ -458,6 +718,8 @@ def generate_text_video_response(
     frames = list(frames or [])
     if not frames:
         return None
+    if ctx and ctx.enabled and ctx.vllm_client is not None:
+        return ctx.vllm_client.generate(prompt_text, frames, max_new_tokens)
     messages = build_text_video_messages(prompt_text, n_frames=len(frames))
     return run_qwen_generation_with_images(
         ctx,

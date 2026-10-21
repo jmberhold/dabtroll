@@ -2,6 +2,11 @@
 
 This guide describes how DABTROLL stores simulation artifacts and semantic index records for future RAG, analysis, and training workflows.
 
+For the btaudit2 artifact dictionary, cohort manifests, annotation semantics and
+non-destructive cleanup policy, use the [dataset guide](btaudit2_dataset.md).
+The semantic index described here is a derived retrieval aid, not the canonical
+dataset or an annotation-completion registry.
+
 ## Scope
 
 Covers:

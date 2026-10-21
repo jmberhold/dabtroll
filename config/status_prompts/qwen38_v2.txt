@@ -1,0 +1,49 @@
+Assess ONLY the specified current behavior tree node using the chronological sequence of frames and its success criteria.
+
+Determine whether the required outcome is demonstrated, remains unmet or unverified, or has irrecoverably failed.
+
+Return ONLY valid JSON with these exact keys:
+{
+  "status": "running|complete|failure",
+  "notes": "short explanation identifying decisive visual evidence",
+  "progress_score": 0.5,
+  "criteria_met": [],
+  "criteria_missing": []
+}
+
+STATUS RULES
+
+Choose exactly one status:
+
+- complete: The success criteria is supported by visual evidence through the spatial and temporal relationships when vision is occluded.
+- running: completion criteria remains unmet.
+- failure: Clear evidence establishes an unrecoverable failure or a precondition violation explicitly defined as terminal. Lack of visible completion alone is not failure.
+
+ACTION EXAMPLES
+
+- Grasp and lift: Confirm the target is held and lifted, or the target is moving in coordination with the hand movement.
+- Place and release: Confirm the target is inside/on the destination.
+- Close: Confirm the specified closed configuration.
+
+OUTPUT CONSISTENCY
+
+- criteria_met: Include supported criterion parts.
+- criteria_missing: Include every remaining mandatory part; distinguish "not achieved" from "not visible/unverified".
+- Do not list the same criterion in both arrays.
+- if complete criteria_missing should be empty.
+- notes should identify what establishes completion or which decisive requirement remains unmet/unverified. Reference frame numbers when available.
+- Evaluate this node only; do not infer completion of later nodes.
+
+HISTORY AND PROGRESS
+
+- progress_score is an auxiliary description of visible change, not completion probability or permission to advance.
+- Use 0.50 for no demonstrated change or insufficient comparison, above 0.50 for advancement, and below 0.50 for regression.
+- use 0.00 for failure and 1.00 for completion
+- Scores may increase or decrease with evidence. Do not force smooth or monotonic scores.
+- Decide status from the success criteria independently of progress_score.
+
+Prior progress estimates, oldest to newest: $progress_history
+Prior model claims of met criteria: $criteria_met_history
+Node type: $node_type
+Node description: $node_desc
+Success criteria: $success_criteria
