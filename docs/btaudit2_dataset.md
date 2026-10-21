@@ -1,4 +1,9 @@
-# BTAudit2 dataset and reproducibility contract
+# VIBTARVE: BTAudit2 dataset and reproducibility contract
+
+This is the dataset guide for **VLM-Initiated Behavior Tree Auditing of Robot
+VLA Execution (VIBTARVE)**. See [the research overview](vibtarve.md) for the
+paper identity, authors and read-only measurement protocol. `btaudit2` is the
+dataset identifier; DABTROLL names the legacy implementation infrastructure.
 
 ## Scope and snapshot
 
@@ -6,6 +11,12 @@ The dataset is a local, evolving research collection, **not bundled with Git**.
 The tracked [2026-10-21 cohort manifest](../config/datasets/btaudit2_20261021_manifest.txt)
 contains dataset-relative episode directory names, not workstation paths.
 Do not edit that manifest when adding data: version a new cohort.
+
+The supplied manuscript reports a balanced human-reviewed subset of **120
+episodes and 310 required episode-node pairs** within the 464 evaluation
+episodes. Those paper-reported counts do not imply all 488 recordings have
+finished human annotation, and this guide's structural/provenance audit does
+not independently reproduce that review subset or the reported accuracy.
 
 | Scenario | Episode 1 (prompt tuning) | Episodes 2-21 | Total |
 | --- | ---: | ---: | ---: |

@@ -1,6 +1,10 @@
-# Qwen3.5 Replay Eval README
+# VIBTARVE replay evaluation: Qwen3.5 and shared infrastructure
 
-This guide explains how to replay mission-engine status evaluation on existing DABTROLL episode artifacts without rerunning simulation.
+This guide explains how to replay mission-engine status evaluation for
+[VLM-Initiated Behavior Tree Auditing of Robot VLA Execution (VIBTARVE)](vibtarve.md)
+on recorded episodes without rerunning or changing the VLA execution.
+The DABTROLL/Qwen3.5 names in modules and artifacts are legacy compatibility
+identifiers; the research effort is VIBTARVE.
 
 Run from the repository root in an activated analysis/replay environment
 ([setup](getting_started.md)). Shell runners use the active `python`, or

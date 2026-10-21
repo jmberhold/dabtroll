@@ -1,8 +1,12 @@
-# Getting started with DABTROLL
+# Getting started with VIBTARVE
 
-DABTROLL is a research framework for simulation, VLM-generated behavior trees
-(BTs), mission-status replay, and human comparison. The code repository is not a
-packaged simulator or a bundled dataset. Start with the smallest workflow you need.
+**VLM-Initiated Behavior Tree Auditing of Robot VLA Execution (VIBTARVE)**
+is a read-only research framework for auditing recorded VLA execution using
+VLMs and episode-specific BT contracts. See [the research overview](vibtarve.md)
+for the paper title, authors and measurement protocol. DABTROLL is the legacy
+runtime/repository name; commands and paths retain those identifiers.
+The code repository is not a packaged simulator or a bundled dataset.
+Start with the smallest workflow you need.
 
 ## Choose a workflow
 
@@ -47,8 +51,8 @@ judgment accuracy or a particular GPU driver.
 For notebook work:
 
 ```bash
-python -m ipykernel install --user --name dabtroll-analysis \
-  --display-name "Python (DABTROLL analysis)"
+python -m ipykernel install --user --name vibtarve-analysis \
+  --display-name "Python (VIBTARVE analysis)"
 jupyter lab
 ```
 
@@ -100,7 +104,11 @@ The schedule's episode directory names are resolved under the supplied
 `--logs-dir`, so historical workstation prefixes do not select a different local
 dataset. Other historical links inside source files are left untouched.
 
-## 4. Generate new recordings
+## 4. Generate new recordings with the legacy runtime
+
+Recording generation is separate from VIBTARVE's read-only auditing stage.
+Legacy live control/refocus behavior must not be represented as part of
+common-evidence evaluation or used to change a trajectory between auditors.
 
 1. Install [Isaac-GR00T](https://github.com/NVIDIA/Isaac-GR00T) and its
    [RoboCasa GR1 tabletop environment](https://github.com/robocasa/robocasa-gr1-tabletop-tasks)
@@ -109,7 +117,7 @@ dataset. Other historical links inside source files are left untouched.
    `requirements-analysis.txt`.
 2. Use a separate simulator/policy environment. Set
    `ISAAC_GROOT_ROOT=/absolute/path/to/Isaac-GR00T`, or pass
-   `--isaac-gr00t-root`. Validate an upstream rollout before using DABTROLL.
+   `--isaac-gr00t-root`. Validate an upstream rollout before using the legacy runtime.
 3. Start GR00T in its checkout/environment:
 
    ```bash

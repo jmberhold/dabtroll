@@ -1,12 +1,24 @@
 # Research attribution and release checklist
 
-## Citing this framework
+## Citing VIBTARVE
 
-For now, cite **DABTROLL**, repository
-<https://github.com/jmberhold/dabtroll>, the exact commit SHA and access date.
-No author list, paper title, publication, DOI or release number has been supplied.
-Do not fabricate a BibTeX entry or imply that a repository alias is a paper author.
-Record the dataset snapshot/cohort separately from the code commit.
+The research title is **VLM-Initiated Behavior Tree Auditing of Robot VLA
+Execution (VIBTARVE)**. The supplied authors, in order, are **J. Mark Berhold,
+Bruce A. Cox, Neil C. Ranly, and Nicholas J. Yielding**, Air Force Institute of
+Technology. See [the research overview](vibtarve.md#paper-title-and-authors) for
+departmental affiliations, contact and manuscript context.
+
+[CITATION.cff](../CITATION.cff) records the supplied title/authorship as software
+citation metadata. Cite the VIBTARVE implementation at
+<https://github.com/jmberhold/dabtroll> with its exact commit SHA and access date.
+The `dabtroll` repository/runtime name is a legacy identifier, not the research
+title. Record the dataset snapshot/cohort separately from the code commit.
+
+Distinguish citation of the software from citation of the manuscript. No venue,
+publication date, DOI, publication status or software release number has been
+supplied; do not invent those fields or present the manuscript as published.
+The [reported findings](vibtarve.md#findings-reported-in-the-supplied-abstract)
+are attributed to the supplied abstract, not recomputed by the documentation.
 
 ## Upstream attribution
 

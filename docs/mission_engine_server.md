@@ -1,6 +1,10 @@
-# Mission Engine Server
+# VIBTARVE mission engine server
 
-This document is the operator guide for installation, model download, startup, configuration, request modes, expected terminal output, and troubleshooting for the mission engine server used by DABTROLL simulation.
+This is the operator guide for model installation, startup, request modes and
+troubleshooting in the legacy runtime supporting
+[VLM-Initiated Behavior Tree Auditing of Robot VLA Execution (VIBTARVE)](vibtarve.md).
+The server provides VLM inference; its legacy live-simulation interfaces do not
+make an auditor an execution authority in VIBTARVE's read-only protocol.
 
 For the local quantized Qwen3.8 model, use the [installation and one-command startup](#qwen38-27b-w4a16-autoround-gptq-startup-vllm-cuda1).
 
@@ -58,7 +62,8 @@ Notes on the explicit form:
 
 ## Qwen3.5-9B Startup (Instruct, Non-Thinking, CUDA:1)
 
-Use this when you want to run DABTROLL mission-engine requests with `Qwen/Qwen3.5-9B` in non-thinking mode.
+Use this for VIBTARVE audit/replay requests, or legacy runtime requests, with
+`Qwen/Qwen3.5-9B` in non-thinking mode.
 
 1. Activate your dedicated environment:
 
@@ -95,7 +100,7 @@ print(sock.recv_json())
 PY
 ```
 
-4. Run DABTROLL with btaudit against that server:
+4. Optionally generate new recordings with the legacy runtime's btaudit mode:
 
 ```bash
 python scripts/simulation.py \
@@ -134,7 +139,7 @@ required. vLLM still uses child/worker processes internally; this is a single
 launch command, not a promise of a single operating-system process.
 
 ```text
-DABTROLL / replay -> ZMQ :5560 -> mission_engine_server1.py
+VIBTARVE replay / legacy runtime -> ZMQ :5560 -> mission_engine_server1.py
                                   -> owned vLLM child, HTTP :8000/v1 -> GPU 1
 ```
 
@@ -677,5 +682,5 @@ If memory pressure is high, use 4B model first and increase only if needed.
 ## Notes
 
 - Ensure this host/port matches `--mission-host` and `--mission-port` used in `scripts/simulation.py`.
-- Start the GR00T task engine server separately before DABTROLL simulation.
+- For legacy recording generation, start the GR00T task engine server separately.
 - This server is REQ/REP style over ZMQ; one response is expected per request.

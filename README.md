@@ -1,11 +1,28 @@
-# DABTROLL research framework
+# VIBTARVE
 
-DABTROLL combines simulation, VLM-generated behavior trees (BTs), mission-status
-replay, and human evaluation. This repository contains code and curated examples;
-recordings, model weights, and local environments are **not bundled with Git**.
+**VLM-Initiated Behavior Tree Auditing of Robot VLA Execution (VIBTARVE)**
+is a read-only research framework for evaluating interchangeable VLM auditors
+of VLA execution. Episode-specific behavior trees (BTs) define observable
+subgoals and success criteria; common-evidence replay holds the recorded
+trajectory, BT, simulator outcome and visual evidence fixed across auditors.
+It contributes a controlled measurement protocol, not a new VLA policy or an
+independent execution authority.
+
+**Authors:** J. Mark Berhold, Bruce A. Cox, Neil C. Ranly, and Nicholas J.
+Yielding, Air Force Institute of Technology. See the
+[VIBTARVE research overview](docs/vibtarve.md) for affiliations, paper context
+and manuscript-reported findings, and [CITATION.cff](CITATION.cff) for software
+citation metadata.
+
+The implementation began as DABTROLL. The GitHub repository name, local
+directory, `--mode dabtroll`, module names and historical artifact paths are
+retained for compatibility; **VIBTARVE is the research name**. Recordings,
+model weights and local environments are **not bundled with Git**.
 
 ## Start here
 
+- [VIBTARVE overview](docs/vibtarve.md): research scope, paper title/authors,
+  common-evidence protocol and limitations.
 - [Getting started](docs/getting_started.md): CPU analysis/tests, environments,
   data prerequisites, model replay, and new simulations.
 - [BTAudit2 dataset guide](docs/btaudit2_dataset.md): artifact schema, notation,
@@ -25,9 +42,12 @@ for denominators, mixed-budget baseline caveats, and reproducibility limits.
 **Licensing is unresolved:** no code or dataset license has been selected.
 Do not assume linked upstream assets share a license or may be redistributed.
 
-## Runtime reference
+## Legacy DABTROLL runtime reference
 
-This README documents the scripts currently applicable to running DABTROLL simulation from `scripts/simulation.py`, including minimum required arguments, parameter bounds, and semantic indexing/query workflow.
+The following reference documents the legacy simulation/replay infrastructure
+used to create and audit recordings, including required arguments, bounds and
+semantic indexing. Live control/refocus features are not part of VIBTARVE's
+read-only common-evidence measurement protocol.
 
 CLI stands for Command-Line Interface. In this README, CLI flags are the options passed directly to Python scripts in a terminal.
 
@@ -35,9 +55,9 @@ References:
 - RoboCasa GR1 tabletop tasks: https://github.com/robocasa/robocasa-gr1-tabletop-tasks
 - GR00T (task engine): https://github.com/NVIDIA/Isaac-GR00T
 
-## 0. Current Contributor Focus: Contribution 1
+## 0. VIBTARVE auditing workflow
 
-Contribution 1 includes the btaudit/btaudit2 evaluation workflow and multi-model
+The research uses the btaudit/btaudit2 evaluation workflow and multi-model
 replay validation, including versioned Qwen3.8 prompt experiments. The older
 Qwen3.5 paths below remain supported reference workflows.
 
@@ -56,7 +76,7 @@ Core scripts for Contribution 1:
 - `scripts/audit_qwen35_sheet3_quality.py` (robust keep/rerun audit)
 - `docs/replay_qwen35_eval_readme.md` (detailed replay and quality workflow)
 
-## 1. Canonical Run Command (DABTROLL)
+## 1. Recording generation command (legacy DABTROLL runtime)
 
 ```bash
 python scripts/simulation.py \
@@ -427,15 +447,18 @@ Status output fields:
 
 ## 11. Updating This Repository (Contributor Checklist)
 
-Use this flow when publishing Contribution 1 updates to GitHub:
+Use this flow when publishing VIBTARVE updates to GitHub:
 
 1. Verify mission/replay outputs and docs are current.
-2. Add new scripts and notebook assets.
-3. Commit with a message that references btaudit + qwen3.5 replay quality work.
+2. Stage only reviewed source, documentation and curated notebook assets.
+3. Commit with a message describing the research/workflow change and validation.
 4. Push to your branch and open/update the PR.
 
-Suggested staging command for current work:
+Follow [the notebook and data policy](CONTRIBUTING.md) before staging.
+Inspect the actual changed paths rather than adding personal notebooks or
+dataset artifacts:
 
 ```bash
-git add README.md docs/*.md scripts/*.py scripts/*.sh notebooks/DABTROLL_Audit_Visualization_Planning_Notebook.ipynb notebooks/VIBTARVE_Visualization.ipynb notebooks/VIBTARVE_Progress.ipynb
+git status --short
+git diff --check
 ```

@@ -1,4 +1,9 @@
-# Status-prompt experiments
+# VIBTARVE status-prompt experiments
+
+These experiments use the replay infrastructure for
+[VLM-Initiated Behavior Tree Auditing of Robot VLA Execution (VIBTARVE)](vibtarve.md).
+Auditor prompt changes do not change the recorded VLA trajectory. Historical
+runtime/function names remain compatible; they do not rename the research.
 
 Use **one immutable prompt revision per experiment**, not renamed Python
 functions or five automatically repeated runs. Review v1, create v2, run v2,

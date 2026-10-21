@@ -1,7 +1,11 @@
-# Contributing to DABTROLL
+# Contributing to VIBTARVE
 
 Start with [Getting started](docs/getting_started.md). This is a research codebase:
 preserve evidence, report limitations, and keep changes reproducible.
+The research name is **VLM-Initiated Behavior Tree Auditing of Robot VLA
+Execution (VIBTARVE)**. See [the research overview](docs/vibtarve.md).
+DABTROLL is the legacy runtime/repository name; retain technical identifiers
+where needed for working commands, not as the paper/framework name.
 
 ## Code and validation
 
@@ -30,8 +34,9 @@ Only curated tutorial/visualization notebooks are allowlisted in `.gitignore`:
 | `VIBTRAVE_Visualizations.ipynb` | Legacy completion/RQ/master-export examples; needs legacy schedule/data |
 | `VIBTARVE_Progress.ipynb` | Legacy reviewed progress curves; needs `data/logs/episode_progress_rows.csv` |
 
-Legacy names are retained for links and continuity; they are not additional
-datasets or an agreed paper title. These examples are **not interchangeable**
+Legacy filenames (including the `VIBTRAVE` spelling) are retained for links and
+continuity; their research name is VIBTARVE. They are not additional datasets.
+These examples are **not interchangeable**
 with the btaudit2 full-run cohort. The large planning notebook, personal notes,
 model sandboxes and temporary result notebooks remain local-only.
 
@@ -70,6 +75,8 @@ workbook upload or concurrent annotation editing.
 
 See [research attribution](docs/research_attribution.md). Cite upstream assets
 actually used, exact checkpoint IDs/revisions, quantization publisher, and the
-DABTROLL commit. Do not invent authors, DOIs, benchmark claims or licenses.
+VIBTARVE implementation commit in the legacy repository. The supplied paper
+title/authors are recorded in [CITATION.cff](CITATION.cff); do not invent a DOI,
+publication status, benchmark claims or licenses.
 No repository license has been selected yet; opening this code for review
 does not grant an unstated redistribution license.
