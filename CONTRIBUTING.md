@@ -30,21 +30,23 @@ Only curated tutorial/visualization notebooks are allowlisted in `.gitignore`:
 | Notebook | Purpose / prerequisites |
 | --- | --- |
 | `btaudit2_research_tutorial.ipynb` | Current btaudit2 structure, provenance audit and episode-1 prompt charts |
-| `VIBTARVE_Visualization.ipynb` | Legacy `data/logs` review/graph examples; needs legacy workbook cohort |
-| `VIBTRAVE_Visualizations.ipynb` | Legacy completion/RQ/master-export examples; needs legacy schedule/data |
-| `VIBTARVE_Progress.ipynb` | Legacy reviewed progress curves; needs `data/logs/episode_progress_rows.csv` |
+| `VIBTRAVE_Visualizations.ipynb` | Corpus and Stage 1 endpoint validity; canonical BTAudit2 evaluation CSV |
+| `VIBTARVE_Visualization.ipynb` | Stage 2 auditor sensitivity; the same canonical evaluation CSV |
+| `VIBTARVE_Progress.ipynb` | Stages 3A--3E BT auditing and optional progress analysis; the same CSV, plus saved frames for galleries |
 
-Legacy filenames (including the `VIBTRAVE` spelling) are retained for links and
-continuity; their research name is VIBTARVE. They are not additional datasets.
-These examples are **not interchangeable**
-with the btaudit2 full-run cohort. The large planning notebook, personal notes,
-model sandboxes and temporary result notebooks remain local-only.
+Existing filenames (including the `VIBTRAVE` spelling) are retained for links and
+continuity; their research name is VIBTARVE. The three paper-results notebooks
+share the canonical BTAudit2 episodes-2--21 evaluation datasheet. Episode-1
+prompt-development records remain separate. The large planning notebook,
+personal notes, model sandboxes and temporary result notebooks remain local-only.
 
 Tracked notebooks should explain purpose, data/cohort, units, review eligibility
 and limitations. Keep source cells portable and outputs/execution counts cleared.
-Run from repository root or `notebooks/`. The legacy progress CSV can be created
-with `build_all_episode_progress_rows` in `scripts/notebook_qwen_compare_utils.py`;
-inspect the function's `logs_dir` and export options for your cohort.
+Run from repository root or `notebooks/`. Refresh the canonical datasheet with
+`python scripts/build_btaudit2_visualization_dataset.py --force` when source
+workbooks change; the paper notebooks use the saved CSV rather than reopening
+workbooks. See the [dataset guide](docs/btaudit2_dataset.md) for data prerequisites
+and `python -m scripts.paper_bundle` for exports without notebook execution.
 
 Before committing an executed tracked notebook, preserve any local results you
 need, then clear outputs using Jupyter's **Clear All Outputs**, or:
@@ -66,9 +68,11 @@ Use new prompt IDs/sheets for new wording and new run tags for repetitions.
 Preserve failed attempts and distinguish them from clean selected outputs.
 Do not run BT regeneration or workbook repair on the canonical reviewed snapshot.
 
-Future dataset-hosting contributions need explicit annotation revision records,
-reviewer consent, data licensing and review/adjudication rules. GitHub is
-currently for code, tests, documentation and portable cohort manifests, not
+The public dataset is hosted separately on
+[Hugging Face](https://huggingface.co/datasets/jmberhold/VIBTARVE) under CC BY 4.0.
+Future annotation contributions still need explicit revision records, reviewer
+consent and review/adjudication rules; no automated annotation service is implied.
+GitHub is for code, tests, documentation and portable cohort manifests, not
 workbook upload or concurrent annotation editing.
 
 ## Citations and licensing

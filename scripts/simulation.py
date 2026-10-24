@@ -326,10 +326,6 @@ def main() -> None:
     normalized_test = str(args.test or "").strip().lower()
     btaudit_enabled = (normalized_test in {"btaudit", "btaudit2"}) and (args.mode == "dabtroll")
     btaudit2_enabled = (normalized_test == "btaudit2") and (args.mode == "dabtroll")
-    status_window_frames = int(args.status_window_frames)
-    if btaudit_enabled and status_window_frames <= 0:
-        status_window_frames = 8
-
     base_cfg = PipelineConfig(
         env_name=args.env_name,
         user_task=args.task,
@@ -347,7 +343,7 @@ def main() -> None:
         frame_every_n_steps=args.frame_every_n_steps,
         status_eval_seconds=args.status_eval_seconds,
         control_freq_hz=args.control_freq_hz,
-        status_window_frames=status_window_frames,
+        status_window_frames=int(args.status_window_frames),
         status_window_seconds=args.status_window_seconds,
         policy_refocus_on_failed_status=not args.disable_policy_refocus,
         policy_refocus_fail_streak=args.policy_refocus_fail_streak,

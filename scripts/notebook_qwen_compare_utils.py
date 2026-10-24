@@ -2246,14 +2246,14 @@ def _read_molmo2_review_sheets(wb_path: Path) -> list[tuple[pd.DataFrame, str, s
         is_gemma4a_review = norm_name == "sheet6a"
         is_gemma4b_review = "sheet6b" in norm_name and "gemma4" in norm_name
         is_gemma4c_review = norm_name.startswith("sheet6c")
-        is_qwen38_review = re.fullmatch(r"qwen38_v[1-5]", norm_name) is not None
+        is_prompt_review = re.fullmatch(r"(?:qwen38|luna6)_v[1-5]", norm_name) is not None
         if not any((
             is_molmo2_review, is_gemma4_review, is_gemma4a_review,
-            is_gemma4b_review, is_gemma4c_review, is_qwen38_review,
+            is_gemma4b_review, is_gemma4c_review, is_prompt_review,
         )):
             continue
 
-        if is_qwen38_review:
+        if is_prompt_review:
             model_name = norm_name
         elif is_gemma4c_review:
             model_name = "gemma4c"
@@ -2288,8 +2288,8 @@ def _read_molmo2_review_sheets(wb_path: Path) -> list[tuple[pd.DataFrame, str, s
 
         if not parsed.empty:
             out.append((parsed, sheet_name, model_name))
-        elif is_qwen38_review:
-            raise ValueError(f"Cannot read Qwen3.8 review sheet {sheet_name!r} in {wb_path}.")
+        elif is_prompt_review:
+            raise ValueError(f"Cannot read prompt-revision review sheet {sheet_name!r} in {wb_path}.")
 
     return out
 
@@ -2319,7 +2319,7 @@ def build_btaudit2_molmo2_episode1_observations(
 
         for review_df, sheet_name, model_name in review_sheets:
             metadata = base_df.iloc[0].to_dict()
-            if not model_name.startswith("qwen38_"):
+            if not model_name.startswith(("qwen38_", "luna6_")):
                 metadata["human_reviewed"] = True
             metadata["review_sheet"] = sheet_name
             metadata["model_name"] = model_name
@@ -2703,6 +2703,13 @@ def _add_molmo_episode_fields(
         "reviewer_time_m:ss", "reviewer_frame", "reviewer_status", "reviewer_notes",
         "evidence_refs",
     ]
+    observation_cols += [
+        column for column in (
+            "source", "request_kind_or_event", "canonical_node_id",
+            "stored_video_time_m:ss", "stored_video_time_s", "timing_basis",
+        )
+        if column in episode_rows.columns
+    ]
     record.update(
         {
             f"{episode_prefix}_review_sheet": str(episode_rows.iloc[0]["review_sheet"]),
@@ -2788,7 +2795,10 @@ def build_btaudit2_molmo2_episode1_dataset(
                 "gemma4b": ("gemma4b", "gemma4b"),
                 "gemma4c": ("gemma4c", "gemma4c"),
             }
-            streams.update({f"qwen38_v{i}": (f"qwen38_v{i}", f"qwen38_v{i}") for i in range(1, 6)})
+            streams.update({
+                f"{family}_v{i}": (f"{family}_v{i}", f"{family}_v{i}")
+                for family in ("qwen38", "luna6") for i in range(1, 6)
+            })
             sheet_names: list[str] = []
             for model_name, (node_prefix, episode_prefix) in streams.items():
                 stream_rows = episode_rows[episode_rows["model_name"].eq(model_name)].copy()
@@ -2834,6 +2844,7 @@ def build_node_completion_review(
     episode_df: pd.DataFrame,
     include_reference_models: bool = True,
     qwen38_versions: Optional[Iterable[int]] = None,
+    luna_versions: Optional[Iterable[int]] = None,
 ) -> dict[str, pd.DataFrame]:
     """Compare completion timestamps once per episode/model/BT slot, never per observation.
 
@@ -2861,14 +2872,18 @@ def build_node_completion_review(
     if "episode_dir" not in episode_df or episode_df["episode_dir"].duplicated().any():
         raise ValueError("Completion review requires exactly one row per episode_dir.")
     models = dict(COMPLETION_REFERENCE_MODELS) if include_reference_models else {}
-    versions = list(qwen38_versions) if qwen38_versions is not None else list(range(1, 6))
-    if any(version not in range(1, 6) for version in versions) or len(set(versions)) != len(versions):
-        raise ValueError("Qwen3.8 revisions must be unique integers from 1 through 5.")
-    for version in versions:
-        prefix = f"qwen38_v{version}"
-        availability = f"{prefix}_observation_count"
-        if availability in episode_df and pd.to_numeric(episode_df[availability], errors="coerce").gt(0).any():
-            models[f"Qwen3.8 v{version}"] = (prefix, f"{prefix}_model_completion_time")
+    for family, label, selected in (
+        ("qwen38", "Qwen3.8", qwen38_versions),
+        ("luna6", "Luna 6", luna_versions),
+    ):
+        versions = list(selected) if selected is not None else list(range(1, 6))
+        if any(version not in range(1, 6) for version in versions) or len(set(versions)) != len(versions):
+            raise ValueError(f"{label} revisions must be unique integers from 1 through 5.")
+        for version in versions:
+            prefix = f"{family}_v{version}"
+            availability = f"{prefix}_observation_count"
+            if availability in episode_df and pd.to_numeric(episode_df[availability], errors="coerce").gt(0).any():
+                models[f"{label} v{version}"] = (prefix, f"{prefix}_model_completion_time")
     records = []
     for _, episode in episode_df.iterrows():
         human_available = episode.get("reviewer_sheet_available", False)
@@ -2947,10 +2962,11 @@ def build_completion_error_analysis(
     episode_df: pd.DataFrame,
     observations_df: pd.DataFrame,
     model_id: str = "qwen38_v2",
+    include_correct: bool = False,
 ) -> dict[str, pd.DataFrame]:
-    """Enrich chart-eligible nodes with actual response evidence, not BT milestones."""
-    if re.fullmatch(r"qwen38_v[1-5]", model_id) is None:
-        raise ValueError("Select a Qwen3.8 prompt revision: qwen38_v1 through qwen38_v5.")
+    """Enrich eligible nodes with response evidence; optionally expose correct cases too."""
+    if re.fullmatch(r"(?:qwen38|luna6)_v[1-5]", model_id) is None:
+        raise ValueError("Select a prompt revision: qwen38_v1-v5 or luna6_v1-v5.")
     detail = build_node_completion_review(episode_df, include_reference_models=False)["detail"]
     nodes = detail[detail["model_id"].eq(model_id) & detail["eligible"]].copy()
     if nodes.empty:
@@ -3014,7 +3030,11 @@ def build_completion_error_analysis(
     nodes.loc[nodes["is_error"], "case_id"] = [
         f"E{i:02d}" for i in range(1, int(nodes["is_error"].sum()) + 1)
     ]
-    cases = nodes[nodes["is_error"]].copy()
+    if include_correct:
+        nodes.loc[~nodes["is_error"], "case_id"] = [
+            f"C{i:02d}" for i in range(1, int((~nodes["is_error"]).sum()) + 1)
+        ]
+    cases = nodes.copy() if include_correct else nodes[nodes["is_error"]].copy()
     case_keys = cases[["episode_dir", "_node_key", "case_id", "category", "node_slot"]]
     timeline = observations.merge(case_keys, on=["episode_dir", "_node_key"], validate="many_to_one")
     timeline = timeline.drop(columns=["_node_key", "_status"])
@@ -3043,6 +3063,71 @@ def build_completion_error_analysis(
         "by_action": summarize(["action_family", "node_type"]),
         "by_node": summarize(["node_slot", "node_id", "node_type"]),
     }
+
+
+def load_completion_case_windows(
+    batch_dir: Path,
+    episode_dir: str,
+    node_id: str,
+) -> pd.DataFrame:
+    """Read exact paired requests/responses from one frozen batch, never another attempt."""
+    batch_dir = Path(batch_dir)
+    experiment = json.loads((batch_dir / "experiment.json").read_text())
+    details = [
+        json.loads(line)
+        for line in (batch_dir / "pass_01" / "details.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    matches = [row for row in details if Path(row["episode_dir"]).name == Path(episode_dir).name]
+    if len(matches) != 1:
+        raise ValueError(f"Expected one batch entry for {episode_dir}, found {len(matches)}.")
+    output_dir = Path(matches[0]["qwen_output_dir"])
+    config = json.loads((output_dir / "replay_config.json").read_text())
+    expected_hash = experiment["prompt"]["sha256"]
+    if config["status_prompt_sha256"] != expected_hash:
+        raise ValueError("Replay prompt hash does not match the selected batch.")
+    summary = json.loads((Path(matches[0]["episode_dir"]) / "episode_summary.json").read_text())
+    outer_step_seconds = float(summary["outer_step_seconds"])
+    rows = [
+        json.loads(line)
+        for line in (output_dir / "missionengine.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    requests = {}
+    responses = {}
+    for row in rows:
+        if _canonical_action_node_id(row.get("node_id", "")) != _canonical_action_node_id(node_id):
+            continue
+        direction = row.get("direction")
+        if direction not in {"request", "response"}:
+            continue
+        target = requests if direction == "request" else responses
+        eval_id = row["status_eval_id"]
+        if eval_id in target:
+            raise ValueError(f"Duplicate {direction} for {eval_id} in the selected batch.")
+        if row.get("status_prompt_sha256") != expected_hash:
+            raise ValueError(f"Mixed prompt hashes for {eval_id} in the selected batch.")
+        target[eval_id] = row
+    if not requests or requests.keys() != responses.keys():
+        raise ValueError(f"Missing or unpaired status evidence for {node_id} in {episode_dir}.")
+    windows = []
+    for eval_id, request in requests.items():
+        response = responses[eval_id]["response"]
+        if not response["ok"]:
+            raise ValueError(f"Failed model response for {eval_id}.")
+        paths = [Path(path) for path in request["frames"]]
+        if not paths or any(not path.is_file() for path in paths):
+            raise FileNotFoundError(f"Missing source frames for {eval_id}.")
+        steps = [int(path.stem.split("_", 1)[1]) for path in paths]
+        windows.append({
+            "status_eval_id": eval_id, "step": request["step"],
+            "simulation_time_s": request["step"] * outer_step_seconds,
+            "frame_count": len(paths), "frames": [str(path) for path in paths],
+            "first_to_last_simulation_seconds": (steps[-1] - steps[0]) * outer_step_seconds,
+            "prompt_text": request["request"]["prompt_text"],
+            "response_text": response["text"], "status_prompt_sha256": expected_hash,
+        })
+    return pd.DataFrame(windows).sort_values("step", kind="stable").reset_index(drop=True)
 
 
 def plot_node_completion_review(counts: pd.DataFrame):

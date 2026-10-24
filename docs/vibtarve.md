@@ -99,6 +99,34 @@ paper's human-reviewed counts or accuracy claims.
   review status and non-destructive contribution rules.
 - [Research tutorial](../notebooks/btaudit2_research_tutorial.ipynb): read-only
   dataset inspection, full-run provenance and episode-1 prompt charts.
+- Paper results:
+  [corpus / Stage 1](../notebooks/VIBTRAVE_Visualizations.ipynb),
+  [Stage 2 sensitivity](../notebooks/VIBTARVE_Visualization.ipynb), and
+  [Stages 3A--3E](../notebooks/VIBTARVE_Progress.ipynb), including separate
+  selected-Qwen3.8 evaluation and manuscript-shaped table exports from the
+  canonical visualization datasheet.
+
+  Requested figure placement balances the notebooks without moving the primary
+  Stage 3 evaluation:
+
+  | Notebook | Figures |
+  | --- | --- |
+  | Corpus / Stage 1 | Simulator ever/final outcomes and human-reference confusion heatmap; start/middle/first-simulator-success frame triptych |
+  | Stage 2 sensitivity | Qwen3.5 inherited/tailored prompt completion tendency and FP/FN tradeoff; node-family balanced accuracy and error-share diagnostic (Stage 3C companion) |
+  | Stages 3A--3E | Sequential four-outcome completion bars for Nodes 1--3 (tables retain Node 4); completion-event union and matched timing violin/box panels |
+
+  All exports share the [paper bundle](../data/derived/vibtarve_paper/index.html)
+  under `data/derived/vibtarve_paper/`: short-labeled vector PDF/300 dpi PNG
+  figures, exact CSV/titled HTML tables, five compact captioned LaTeX tables,
+  a full unchanged source CSV copy, and a descriptive index/provenance catalog.
+  Rebuild with `python -m scripts.paper_bundle`. Figures are 7.2 inches wide
+  with minimum 9.5 pt text; dense panels stack rather than shrinking typography.
+  Triptych selection exports exact frame paths and
+  simulator-machine times; these are not human/replay-video times. Node-family
+  error shares use all reviewed family pairs as the denominator, not conditional
+  FPR/FNR. Timing-event proportions exclude both-incomplete nodes and preserve
+  both-complete events with missing timestamps. The documented original-Qwen3
+  source-clock discrepancy remains visible rather than forcing manuscript values.
 - [Prompt experiments](status_prompt_experiments.md): immutable prompts and
   sequential replay with protected outputs.
 - [Mission server](mission_engine_server.md): installation and model serving.

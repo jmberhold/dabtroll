@@ -7,6 +7,8 @@ The server provides VLM inference; its legacy live-simulation interfaces do not
 make an auditor an execution authority in VIBTARVE's read-only protocol.
 
 For the local quantized Qwen3.8 model, use the [installation and one-command startup](#qwen38-27b-w4a16-autoround-gptq-startup-vllm-cuda1).
+For remote inference without model weights or a GPU, see
+[Luna and other cloud models](#remote-luna-and-other-cloud-models).
 
 Related model/project links:
 - Qwen3-VL-8B-Instruct: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
@@ -59,6 +61,224 @@ CUDA_VISIBLE_DEVICES=1 python scripts/mission_engine_server1.py \
 Notes on the explicit form:
 - Omit `--enable_thinking` if you want default behavior (thinking off).
 - Add `--disable_flash_attention_2` only when needed for compatibility/debugging.
+
+## Remote Luna and other cloud models
+
+The remote backend starts from
+[`VIBTARVE_Luna_API_Demo.ipynb`](../notebooks/VIBTARVE_Luna_API_Demo.ipynb).
+`--model luna` selects its `gpt-6-luna` model ID, official Responses endpoint,
+`reasoning.effort="none"`, `store=False`, a 60-second HTTP timeout, and **zero
+automatic retries**. This is an API model, not a local Hugging Face checkpoint.
+No Torch, Transformers, CUDA, vLLM child, or model download is used by this
+backend. Existing local-model commands and defaults are unchanged.
+
+```text
+Replay / legacy runtime -> ZMQ :5560 -> mission_engine_server1.py
+                                    -> HTTPS provider API
+```
+
+### 1. Environment and credentials
+
+Reuse the demo's `luna` environment, or create a dedicated one:
+
+```bash
+# Skip creation if the demo environment already exists.
+conda create -n luna python=3.11 pip -y
+conda activate luna
+python -m pip install "openai>=3.37.0" pillow pyzmq
+```
+
+The SDK minimum records the version verified with the demo and this adapter.
+The full CPU analysis/test environment is also available through
+[`requirements-analysis.txt`](../requirements-analysis.txt); it is not required
+for serving cloud inference alone.
+
+Credentials are resolved in this order:
+
+1. `--cloud_api_key_file PATH`, when explicitly supplied.
+2. The environment variable named by `--cloud_api_key_env` (default
+   `OPENAI_API_KEY`).
+3. For `--model luna` **on the official default endpoint only**, the demo's
+   `~/.config/dabtroll/openai_api_key` file.
+
+Missing/empty credentials fail startup. An explicit missing/empty file is an
+error, not a reason to silently use a different credential. No credential is
+printed in startup/health output. Do not put secrets in command-line arguments,
+source, notebook cells, logs, or Git.
+
+If you have not already saved the demo key, run this in a terminal on the
+server machine (not a notebook cell):
+
+```bash
+python - <<'PY'
+from getpass import getpass
+from pathlib import Path
+key = getpass("API key (hidden): ").strip()
+if not key:
+    raise SystemExit("No key entered.")
+path = Path.home() / ".config" / "dabtroll" / "openai_api_key"
+path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+path.touch(mode=0o600, exist_ok=True)
+path.chmod(0o600)
+path.write_text(key + "\n", encoding="utf-8")
+print("Saved credential file:", path)
+PY
+```
+
+The credential file is plaintext with user-only file permissions, not an
+encrypted vault. Keep it outside the checkout and revoke/replace leaked keys.
+Set provider/project spending limits before running replay.
+
+### 2. Start Luna, then check local health
+
+```bash
+conda activate luna
+python scripts/mission_engine_server1.py \
+  --model luna --host 127.0.0.1 --port 5560 \
+  --max_new_tokens 1024 --bt_max_new_tokens 2048
+```
+
+Startup **does not contact the provider by default**. `health` also makes no
+HTTP request: it confirms local configuration and reports `backend="cloud"`,
+`cloud_model`, `cloud_api`, `cloud_base_url`, `cloud_reasoning_effort`,
+`provider_checked=false`, and `health_scope="local_configuration_only"`.
+It does **not** prove credential validity, account balance, model entitlement,
+provider availability, or generation quality.
+
+```bash
+python - <<'PY'
+import zmq
+with zmq.Context() as ctx:
+    with ctx.socket(zmq.REQ) as sock:
+        sock.LINGER = 0
+        sock.RCVTIMEO = 5000
+        sock.connect("tcp://127.0.0.1:5560")
+        sock.send_json({"mode": "health"})
+        print(sock.recv_json())
+PY
+```
+
+To explicitly request one **paid** startup text warmup, add
+`--cloud_startup_warmup`. Its budget is `--warmup_max_new_tokens` (default 8).
+`--disable_startup_warmup` takes precedence. A cloud warmup failure aborts
+startup; no retry or local-model fallback occurs. Normal local-model warmup
+behavior is unchanged.
+
+### 3. Optional paid smoke test, then replay
+
+Only run this after approving provider data handling and billing. Each
+generation request is potentially paid; rerunning the test sends another.
+
+```bash
+python - <<'PY'
+import zmq
+with zmq.Context() as ctx:
+    with ctx.socket(zmq.REQ) as sock:
+        sock.LINGER = 0
+        sock.RCVTIMEO = 75000
+        sock.connect("tcp://127.0.0.1:5560")
+        sock.send_json({
+            "mode": "text", "prompt_text": "Reply with only OK.",
+            "max_new_tokens": 32,
+        })
+        result = sock.recv_json()
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error", "Mission-engine request failed"))
+        print(result["text"])
+        print("Usage:", result["usage"])
+PY
+```
+
+Simulation and replay still use their existing `--mission-host` /
+`--mission-port` settings. The usual `bt`, `text`, `text_image`, `text_video`,
+`video`, and scene modes work without changing clients. Existing BT synthesis
+templates and client-selected status prompts/parsers are unchanged. A prose
+answer is not automatically converted into valid status JSON; use the exact
+rendered audit prompt and the existing parser, as in the demo.
+
+For cloud video modes, **each frame is a separate image, in supplied order**,
+followed by the unchanged rendered prompt. This is not the Qwen3.8 contact-sheet
+path and does not upload a video file. Image and BT modes still use the newest
+frame; `image_path` still takes precedence over `frames_b64`. The transport
+encodes RGB JPEGs at quality 92, matching the demo helper, without resizing or
+resampling. Re-encoding is necessary because the shared ZMQ path decodes inputs
+to PIL images. Select an appropriate frame count/resolution on the client to
+control cost and provider limits.
+
+Cloud successes add `backend`, `cloud_model`, `cloud_api`, and `usage` to the
+existing response fields. Usage is the provider's SDK usage object serialized
+to JSON: Responses normally reports `input_tokens`/`output_tokens`, while Chat
+Completions reports `prompt_tokens`/`completion_tokens`. Do not interchange the
+schemas or hard-code a universal price. Provider billing is authoritative.
+The existing simulation/replay mission-engine JSONL logs retain the full
+`response` object, so these cloud fields are recorded alongside latency without
+a separate logging pipeline. Inspect `response.usage` and `response.cloud_model`;
+legacy spreadsheet summaries do not automatically calculate cloud costs.
+Errors, refusals, missing usage/text, non-completed Responses, non-`stop` chat
+completions, and unexpected reasoning tokens when effort is `none` return
+`ok=false`; partial output is not returned as a successful audit. A failed or
+timed-out request may still be charged: inspect billing before retrying.
+
+### 4. Other compatible cloud providers
+
+Use `--model cloud` and an explicit provider model ID. This does not require
+adding every remote model to the server's local-model allowlist:
+
+```bash
+# Provide a restricted credential file outside Git, or use a secret-manager
+# environment variable and --cloud_api_key_env PROVIDER_API_KEY.
+python scripts/mission_engine_server1.py \
+  --model cloud \
+  --cloud_model YOUR_PROVIDER_VISION_MODEL \
+  --cloud_base_url https://YOUR_PROVIDER_HOST/v1 \
+  --cloud_api responses \
+  --cloud_api_key_file "$HOME/.config/dabtroll/provider_api_key" \
+  --cloud_timeout_s 60
+```
+
+For an OpenAI-compatible Chat Completions provider, change
+`--cloud_api chat_completions`. Generic cloud reasoning is **omitted** unless
+`--cloud_reasoning_effort` is explicitly supplied; do not send unsupported
+parameters to a provider. Luna always uses effort `none`; `--enable_thinking`
+is rejected for cloud models to avoid silently ignored local-model settings.
+
+Compatibility is a wire-contract requirement, not a claim that every vendor's
+API works unchanged:
+
+- Responses: `/responses`, ordered `input_image` + `input_text` parts,
+  `max_output_tokens`, `store=False`, completed status, assistant text and usage.
+- Chat Completions: `/chat/completions`, ordered `image_url` + `text` parts,
+  `max_completion_tokens`, `store=False`, a `stop` completion with text and usage.
+- Optional reasoning uses `reasoning.effort` (Responses) or `reasoning_effort`
+  (Chat Completions). No Qwen sampling/chat-template parameters are sent.
+- The provider must accept base64 JPEG data URLs for image modes. Text-only
+  models can only serve text requests.
+- No startup model-list/entitlement probe is made; restricted keys need only the
+  generation endpoint permissions actually used.
+
+HTTPS is required except for loopback HTTP mock endpoints. Credentials/query
+strings/fragments in base URLs are rejected. Do not select a custom endpoint
+unless you intend it to receive the selected credential and data. Providers
+with different authentication, image formats, token-budget fields, or response
+schemas need a deliberate transport extension in
+[`CloudClient`](../scripts/mission_engine.py), with mock contract tests; there
+is no automatic protocol guessing, parameter fallback, or cross-provider retry.
+
+**Data and cost boundary:** cloud generation sends prompts and images off the
+server machine. Obtain authorization for the data, review provider retention
+and regional policies, and use provider-side spend controls. `store=False` is
+not a guarantee of zero retention. Keep ZMQ bound to loopback unless access is
+otherwise controlled; this interface does not add authentication or encryption.
+The synchronous REP server processes one request at a time. Set client receive
+timeouts above the HTTP timeout plus processing/queueing overhead. A client
+timeout does not cancel an in-flight provider request; do not automatically
+resubmit potentially paid calls.
+
+CPU-only validation (local mock HTTP endpoints, no real credentials or charges):
+
+```bash
+python -m unittest discover -s tests -p 'test_mission_engine_*.py' -v
+```
 
 ## Qwen3.5-9B Startup (Instruct, Non-Thinking, CUDA:1)
 
@@ -464,6 +684,8 @@ python scripts/simulation.py \
 - `allenai/Molmo2-8B`
 - `google/gemma-4-E4B-it`
 - `qwen38` (vLLM-served local `Qwen3.8-27B-W4A16-AutoRound-GPTQ` checkpoint)
+- `luna` (remote `gpt-6-luna`, default Responses API, reasoning disabled)
+- `cloud` (remote compatible provider; requires `--cloud_model`)
 
 ## CLI Options (Complete)
 
@@ -471,7 +693,7 @@ python scripts/simulation.py \
 |---|---|---|---|
 | `--host` | string | `127.0.0.1` | Bind address for ZMQ REP socket |
 | `--port` | int | `5560` | Bind port for ZMQ REP socket |
-| `--model` | string (choices) | `Qwen/Qwen3-VL-4B-Instruct` | Model selection; `qwen38` starts managed vLLM, others load with Transformers |
+| `--model` | string (choices) | `Qwen/Qwen3-VL-4B-Instruct` | `luna`/`cloud` use remote APIs; `qwen38` starts managed vLLM; others load with Transformers |
 | `--device` | string | `cuda` | Device label for logging; model loading behavior is determined in mission_engine loader |
 | `--max_new_tokens` | int | `1024` | Token budget for non-BT text modes |
 | `--bt_max_new_tokens` | int | `2048` | Token budget for BT synthesis mode |
@@ -487,6 +709,14 @@ python scripts/simulation.py \
 | `--vllm_model` | string | `qwen38` | Must match vLLM's `--served-model-name` |
 | `--vllm_api_key` | string | `OPENAI_API_KEY` env or `EMPTY` | HTTP bearer key; prefer env for non-placeholder secrets |
 | `--vllm_timeout_s` | float | `120.0` | Positive finite timeout per HTTP request |
+| `--cloud_base_url` | string | `https://api.openai.com/v1` | Provider API base URL; HTTPS required except loopback |
+| `--cloud_model` | string | `gpt-6-luna` for Luna; otherwise required | Provider model ID |
+| `--cloud_api` | choice | `responses` | `responses` or `chat_completions` wire contract |
+| `--cloud_api_key_env` | string | `OPENAI_API_KEY` | Name of credential environment variable, not the secret |
+| `--cloud_api_key_file` | path | unset | Explicit credential file takes precedence over env; Luna can fall back to demo key file |
+| `--cloud_timeout_s` | float | `60.0` | Positive finite HTTP timeout; no automatic retries |
+| `--cloud_reasoning_effort` | choice | `none` for Luna; omitted for generic cloud | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`; provider must support selected value |
+| `--cloud_startup_warmup` | flag | off | Opt into a paid startup text request; `--disable_startup_warmup` overrides |
 
 Model-family behavior notes:
 - For `Qwen/Qwen3.5-4B` and `Qwen/Qwen3.5-9B`, thinking mode is controlled through chat-template kwargs.
@@ -497,6 +727,8 @@ Model-family behavior notes:
 - `qwen38` uses a managed vLLM child for inference by default. GPU selection
   comes from inherited `CUDA_VISIBLE_DEVICES`; `--device` is still a log label,
   and `--disable_flash_attention_2` does not change the tested vLLM configuration.
+- `luna`/`cloud` do not load local model libraries or use GPU/device settings.
+  They send images as separate chronological frames, not contact sheets.
 
 ## Server Capabilities
 
@@ -504,6 +736,8 @@ The server accepts JSON requests over ZMQ and supports these operational modes:
 
 1. `health`
 Returns server/runtime metadata (model, platform, CUDA visibility, versions).
+For cloud backends this is a **local-configuration-only** check; it never calls
+the provider and does not prove inference readiness.
 
 2. `bt`
 Synthesizes behavior tree JSON text from image input plus `task_text`.
@@ -518,6 +752,7 @@ Runs image + text generation from image input and `prompt_text`.
 Runs multi-frame evaluation from frame list + `prompt_text`.
 With `qwen38`, frames are presented as one chronological contact sheet, not
 native video or separate images.
+With `luna`/`cloud`, frames are separate images in the supplied order.
 
 6. Fallback scene description mode
 For unrecognized modes, if image is present, server uses an image-text response (default prompt: `Describe the scene.`).
@@ -552,6 +787,9 @@ Typical success response:
   "latency_s": 2.31
 }
 ```
+
+Cloud successes also include `backend="cloud"`, `cloud_model`, `cloud_api`, and
+provider `usage`; existing local-model response fields are unchanged.
 
 Typical error response:
 
@@ -600,7 +838,9 @@ These logs help confirm that client requests are reaching the server and how lon
 Before launch:
 
 1. Activate the correct Python environment with model dependencies.
-2. Ensure GPU visibility is set as intended (`CUDA_VISIBLE_DEVICES`).
+2. For local models, ensure GPU visibility is set as intended
+   (`CUDA_VISIBLE_DEVICES`). For cloud models, verify credentials, endpoint,
+   data-sharing approval, and spending limits instead.
 3. Confirm network target (host/port) matches simulation flags.
 
 Before simulation run:

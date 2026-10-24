@@ -72,20 +72,27 @@ provenance, licensing, benchmark quality, or permission to republish weights.
 
 ## Unresolved release items
 
-**No repository license has been selected.** No dataset license or annotation
-contribution agreement has been selected either. This PR must not assign legal
-terms by implication. Resolve those before advertising general reuse or
-redistributing a dataset/weights.
+**No implementation-repository software license has been selected.** The
+separate [`jmberhold/VIBTARVE`](https://huggingface.co/datasets/jmberhold/VIBTARVE)
+dataset repository was created privately with **CC BY 4.0** metadata, and the
+maintainer confirmed upstream redistribution rights and reviewer consent on
+October 24, 2026. These dataset terms do not relicense this code, model weights,
+or upstream assets as standalone resources. No annotation contribution
+agreement or automated contribution service is implied.
 
-Before a public dataset release (for example on Hugging Face), confirm:
+For public dataset releases, maintain:
 
-1. Rights and compatible licenses for simulator-derived images/videos, upstream
-   assets, model-generated artifacts and annotations.
-2. Reviewer consent/pseudonymization and any personal data in notes/paths/links.
+1. Record the maintainer's rights confirmation and preserve compatible upstream
+   attribution for simulator-derived images/videos, model outputs and annotations.
+2. Retain reviewer consent confirmation and review any personal data in
+   notes/paths/links after staging and sanitization.
 3. Stable versioned download/checksum manifests, environment/upstream revision
    capture, dataset card, limitations and intended-use guidance.
 4. Append-only annotation contribution schema, review/moderation process,
    adjudication/conflict policy and correction history.
 
-There is currently no promised public dataset URL, paper DOI, or automated
-multi-reviewer hosting service.
+The approved dataset snapshot was uploaded privately and then made public and
+ungated on October 24, 2026; see the
+[release record](btaudit2_dataset.md#local-hugging-face-release-candidate).
+Anonymous table and media access were verified. There is no supplied paper DOI
+or automated multi-reviewer hosting service.

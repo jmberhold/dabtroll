@@ -25,6 +25,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import re
 import time
 import warnings
@@ -42,6 +43,9 @@ from dabtroll_bt_pipeline import (
 )
 from mission_engine import BehaviorTreeRunner
 from prompts import load_status_prompt
+from replay_video_utils import (
+    _find_primary_video_path, _fmt_mmss_from_seconds, _safe_video_duration_seconds,
+)
 
 try:
     from openpyxl import load_workbook
@@ -58,7 +62,9 @@ THIN = Side(border_style="thin", color="BFBFBF")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 CUDA_ERROR_RE = re.compile(r"(cuda|unspecified launch failure|cudaerrorlaunchfailure|cublas|device-side assert)", re.IGNORECASE)
 BACKEND_ERROR_RE = re.compile(
-    r"(enginecore|enginedead|engine core|connection error|connection refused|mission_engine_timeout)",
+    r"(enginecore|enginedead|engine core|connection error|connection refused|mission_engine_timeout"
+    r"|request timed out|cloud (?:response|completion|model|generation)"
+    r"|error code:\s*[45]\d{2})",
     re.IGNORECASE,
 )
 
@@ -186,57 +192,6 @@ def _fmt_mmss_from_step(step: Optional[int], outer_step_seconds: float) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-def _fmt_mmss_from_seconds(seconds: Optional[float]) -> str:
-    if seconds is None:
-        return ""
-    total_seconds = max(0.0, float(seconds))
-    minutes = int(total_seconds // 60)
-    rem_seconds = int(round(total_seconds - (minutes * 60)))
-    if rem_seconds == 60:
-        minutes += 1
-        rem_seconds = 0
-    return f"{minutes}:{rem_seconds:02d}"
-
-
-def _safe_video_duration_seconds(video_path: Path) -> Optional[float]:
-    if not video_path.exists():
-        return None
-
-    try:
-        import cv2  # type: ignore
-
-        cap = cv2.VideoCapture(str(video_path))
-        if cap.isOpened():
-            frame_count = float(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
-            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-            cap.release()
-            if fps > 0.0 and frame_count >= 0.0:
-                return frame_count / fps
-        else:
-            cap.release()
-    except Exception:
-        pass
-
-    try:
-        import av  # type: ignore
-
-        with av.open(str(video_path)) as container:
-            if container.duration is not None:
-                return float(container.duration) / 1_000_000.0
-    except Exception:
-        pass
-
-    return None
-
-
-def _find_primary_video_path(episode_dir: Path) -> Optional[Path]:
-    video_dir = episode_dir / "video"
-    if not video_dir.exists():
-        return None
-    mp4s = sorted(video_dir.glob("**/*.mp4"))
-    return mp4s[0] if mp4s else None
-
-
 def _parse_step_from_frame_token(token: Any) -> Optional[int]:
     text = str(token or "").strip()
     if not text.startswith("frame_"):
@@ -332,6 +287,14 @@ def _derive_timing_from_summary(
     status_window_frames_override: Optional[int],
 ) -> Tuple[int, int]:
     outer_step_seconds = float(summary.get("outer_step_seconds", 0.4) or 0.4)
+    if not math.isfinite(outer_step_seconds) or outer_step_seconds <= 0:
+        raise ValueError("outer_step_seconds must be finite and positive.")
+    for name, value in (
+        ("status_eval_seconds", status_eval_seconds_override),
+        ("status_window_seconds", status_window_seconds_override),
+    ):
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            raise ValueError(f"{name} must be finite and positive.")
     default_eval_seconds = float(summary.get("status_eval_seconds_target", 2.0) or 2.0)
     default_window_seconds = float(summary.get("status_window_seconds_target", 4.0) or 4.0)
     default_window_frames = int(summary.get("status_window_frames", 0) or 0)
@@ -343,24 +306,27 @@ def _derive_timing_from_summary(
         else default_window_seconds
     )
 
-    n_action_steps = max(1, int(round(outer_step_seconds * 20.0)))
     cfg = PipelineConfig(
         env_name=str(summary.get("env_name", "replay")),
-        n_action_steps=n_action_steps,
-        control_freq_hz=20.0,
+        n_action_steps=1,
+        control_freq_hz=1.0 / outer_step_seconds,
         status_eval_seconds=eval_seconds,
         status_window_seconds=window_seconds,
-        status_window_frames=default_window_frames,
+        status_window_frames=0,
     )
 
     eval_every_steps = int(summary.get("status_eval_every_n_steps", 0) or 0)
-    if eval_every_steps <= 0:
+    if status_eval_seconds_override is not None or eval_every_steps <= 0:
         eval_every_steps = _status_eval_every_steps(cfg)
 
     if status_window_frames_override is not None and int(status_window_frames_override) > 0:
         window_frames = int(status_window_frames_override)
     else:
-        window_frames = int(summary.get("status_window_frames", 0) or 0)
+        window_frames = (
+            default_window_frames
+            if status_window_seconds_override is None and status_window_frames_override is None
+            else 0
+        )
         if window_frames <= 0:
             window_frames = _status_window_frame_count(cfg)
 
@@ -423,6 +389,8 @@ def _build_manifest_rows_from_frames(
             p = path_by_step.get(s)
             if p is not None:
                 window_paths.append(str(p))
+        if len(window_paths) != step - start + 1:
+            raise ValueError(f"Incomplete replay frame window ending at step {step} in {episode_dir}.")
         if window_paths:
             rows.append(
                 {
@@ -440,6 +408,8 @@ def _build_manifest_rows_from_frames(
     if step_limit >= step_increment and step_limit not in {row.get("step") for row in rows}:
         start = max(0, int(step_limit) - int(window_frames) + 1)
         window_paths = [str(path_by_step[s]) for s in range(start, int(step_limit) + 1) if s in path_by_step]
+        if len(window_paths) != int(step_limit) - start + 1:
+            raise ValueError(f"Incomplete terminal frame window ending at step {step_limit} in {episode_dir}.")
         if window_paths:
             rows.append(
                 {
@@ -843,6 +813,13 @@ def _replay_episode(
     manifest_path = episode_dir / "status_window_manifest.jsonl"
     workbook_path = episode_dir / "human_rater_evaluation.xlsx"
     use_manifest_rows = str(window_source).strip().lower() == "manifest"
+    if use_manifest_rows and any(value is not None for value in (
+        status_eval_seconds_override, status_window_seconds_override, status_window_frames_override,
+    )):
+        raise ValueError(
+            "Timing overrides require --window-source frames; a saved manifest cannot "
+            "supply additional frames or evaluation times. Omit overrides to replay historical manifests."
+        )
 
     if not summary_path.exists() or not bt_path.exists() or not workbook_path.exists() or (use_manifest_rows and not manifest_path.exists()):
         raise FileNotFoundError(
@@ -862,6 +839,21 @@ def _replay_episode(
             workbook.close()
 
     summary = _read_json(summary_path)
+    outer_step_seconds = float(summary.get("outer_step_seconds", 0.4) or 0.4)
+    steps_executed = int(summary.get("steps_executed", 0) or 0)
+    machine_duration_seconds = max(0.0, float(steps_executed) * outer_step_seconds)
+    video_path = _find_primary_video_path(episode_dir)
+    video_duration_seconds = _safe_video_duration_seconds(video_path) if video_path is not None else None
+    video_time_scale = None
+    if video_path is not None:
+        if video_duration_seconds is None or not math.isfinite(video_duration_seconds) or video_duration_seconds <= 0:
+            raise ValueError(
+                f"Cannot measure saved video duration: {video_path}. Install OpenCV or PyAV "
+                "in the replay environment before inference; simulation seconds must not be labeled video time."
+            )
+        if machine_duration_seconds <= 0:
+            raise ValueError(f"Cannot calibrate video time with nonpositive simulation duration: {episode_dir}")
+        video_time_scale = video_duration_seconds / machine_duration_seconds
     bt_json = _read_json(bt_path)
     bt_root = bt_json.get("root", {}) if isinstance(bt_json, dict) else {}
     node_map = _flatten_bt_nodes(bt_root if isinstance(bt_root, dict) else {})
@@ -934,6 +926,23 @@ def _replay_episode(
         "window_source": window_source,
         "expected_eval_every_n_steps": expected_eval_every_steps,
         "expected_status_window_frames": expected_window_frames,
+        "review_timing": {
+            "clock": "video_duration_scaled" if video_time_scale is not None else "simulation_no_video",
+            "video_duration_seconds": video_duration_seconds,
+            "simulation_duration_seconds": machine_duration_seconds,
+            "simulation_to_video_scale": video_time_scale,
+        },
+        "timing": {
+            "clock": "simulation",
+            "window_convention": "sample_count",
+            "outer_step_seconds": outer_step_seconds,
+            "status_eval_seconds_override": status_eval_seconds_override,
+            "status_window_seconds_override": status_window_seconds_override,
+            "status_window_frames_override": status_window_frames_override,
+            "resolved_eval_seconds": expected_eval_every_steps * outer_step_seconds,
+            "resolved_window_nominal_seconds": expected_window_frames * outer_step_seconds,
+            "resolved_window_first_to_last_seconds": (expected_window_frames - 1) * outer_step_seconds,
+        },
     }
     (qwen_out_dir / "status_prompt_source.txt").write_text(prompt_profile.source_text, encoding="utf-8")
     (qwen_out_dir / "replay_config.json").write_text(json.dumps(replay_config, indent=2), encoding="utf-8")
@@ -962,8 +971,20 @@ def _replay_episode(
         status_eval_id = f"{output_prefix}:{summary.get('episode_id','')}:step_{step}:node_{node_id}"
         frames = [str(p) for p in item.get("frames", []) if str(p)]
         frame_paths = [Path(p) for p in frames if Path(p).exists()]
-        if not frame_paths:
-            continue
+        if not frame_paths or len(frame_paths) != len(frames):
+            raise FileNotFoundError(f"Missing replay frames at step {step} in {episode_dir}.")
+        indices = [_frame_index_from_path(p) for p in frame_paths]
+        if any(index is None for index in indices):
+            raise ValueError(f"Replay frame names must include outer-step indices at step {step}.")
+        frame_steps = [int(index) for index in indices if index is not None]
+        frame_timing = {
+            "clock": "simulation",
+            "frame_count": len(frame_steps),
+            "first_step": frame_steps[0],
+            "last_step": frame_steps[-1],
+            "first_to_last_seconds": (frame_steps[-1] - frame_steps[0]) * outer_step_seconds,
+            "startup_partial": step < expected_window_frames - 1,
+        }
 
         prompt_text = str(item.get("prompt_text", "") or "").strip() if use_manifest_prompts else ""
         window_prompt_metadata = dict(prompt_metadata)
@@ -1002,6 +1023,7 @@ def _replay_episode(
             "current_frame_path": current_frame_path,
             "frames": frames,
             "frames_count": len(frames),
+            "frame_timing": frame_timing,
             "node_id": node_id,
             "node_type": node_type,
             "status_eval_id": status_eval_id,
@@ -1029,6 +1051,7 @@ def _replay_episode(
             "current_frame_path": current_frame_path,
             "frames": frames,
             "frames_count": len(frames),
+            "frame_timing": frame_timing,
             "node_id": node_id,
             "node_type": node_type,
             "status_eval_id": status_eval_id,
@@ -1058,6 +1081,7 @@ def _replay_episode(
                     notes = f"failure_ignored_low_evidence(count={low_progress_count})"
 
         out_manifest = dict(item)
+        out_manifest["frame_timing"] = frame_timing
         out_manifest.update(window_prompt_metadata)
         out_manifest["prompt_text"] = prompt_text
         out_manifest["qwen35_replay"] = True
@@ -1120,17 +1144,6 @@ def _replay_episode(
     _write_jsonl(out_manifest_path, replay_manifest_rows)
     _write_jsonl(out_mission_path, replay_mission_rows)
     _write_jsonl(out_trace_path, replay_trace_rows)
-
-    outer_step_seconds = float(summary.get("outer_step_seconds", 0.4) or 0.4)
-    steps_executed = int(summary.get("steps_executed", 0) or 0)
-    machine_duration_seconds = max(0.0, float(steps_executed) * outer_step_seconds)
-    video_duration_seconds: Optional[float] = None
-    video_time_scale: Optional[float] = None
-    video_path = _find_primary_video_path(episode_dir)
-    if video_path is not None:
-        video_duration_seconds = _safe_video_duration_seconds(video_path)
-    if video_duration_seconds is not None and machine_duration_seconds > 0.0:
-        video_time_scale = float(video_duration_seconds) / float(machine_duration_seconds)
 
     milestones = _build_mission_milestones(
         mission_rows=replay_mission_rows,
@@ -1203,19 +1216,19 @@ def _parse_args() -> argparse.Namespace:
         "--status-eval-seconds",
         type=float,
         default=None,
-        help="Optional override for eval cadence seconds. Default: use episode_summary status_eval_seconds_target.",
+        help="Simulation-second cadence override; replaces recorded step cadence. Without it, preserve recorded cadence.",
     )
     ap.add_argument(
         "--status-window-seconds",
         type=float,
         default=None,
-        help="Optional override for status window seconds. Default: use episode_summary status_window_seconds_target.",
+        help="Nominal simulation-second window override; replaces recorded frame count. Without it, preserve recorded count.",
     )
     ap.add_argument(
         "--status-window-frames",
         type=int,
         default=None,
-        help="Optional override for exact window frame count.",
+        help="Exact frame count, taking precedence over seconds; <=0 derives from seconds. Requires --window-source frames.",
     )
     ap.add_argument(
         "--ignore-manifest-prompts",

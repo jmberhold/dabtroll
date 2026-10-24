@@ -61,6 +61,88 @@ Select that kernel. Start with
 It reads but does not modify dataset inputs. It needs the separately supplied
 snapshot; the unit tests do not.
 
+For manuscript results, run these notebooks from top to bottom, in order:
+
+1. [Corpus and Stage 1](../notebooks/VIBTRAVE_Visualizations.ipynb):
+   corpus/BT structure, success-ever versus final-frame outcomes, and endpoint
+   validity against human planned-path completion.
+2. [Stage 2](../notebooks/VIBTARVE_Visualization.ipynb):
+   auditor/prompt sensitivity, paired decision shifts, and replay settings.
+   Only selected Qwen3.8 v4 and Luna v5 enter performance comparisons;
+   episode-1 prompt-development trials are excluded.
+3. [Stages 3A--3E](../notebooks/VIBTARVE_Progress.ipynb):
+   auditability, mission agreement, required-node coverage/sequential gates,
+   temporal alignment, and deterministic disagreement cases with frames.
+   Enable `RUN_PROGRESS_SUPPLEMENT` for the additional fully scored Sheet0
+   continuous-progress analysis.
+
+Each notebook is self-contained: configure `EPISODE_CSV`, `COHORT_MANIFEST`,
+and `OUTPUT_DIR` in its setup cell. All three use
+`data/logs/btaudit2/btaudit2_episodes_2_21_visualization_rows.csv`.
+The shared default output is the [paper bundle](../data/derived/vibtarve_paper/index.html)
+under `data/derived/vibtarve_paper/`:
+
+- `index.html`: browsable titles, descriptions, previews, stage grouping and downloads.
+  Figure/table titles omit export codes; short IDs remain in filenames and links.
+- `figures/f*.pdf` and `c*.pdf`: short-labeled vector figure and case masters;
+  matching PNGs are 300 dpi. All use a 7.2-inch manuscript width, a minimum
+  9.5 pt font, a colorblind-aware auditor palette, and readable legends/margins.
+  Complex panels stack vertically rather than shrinking text. Use the PDFs at
+  that width, not reduced to a single column.
+  Every two-/three-panel chart also has `*_side.pdf` / `*_side.png` alternatives:
+  14.4-inch side-by-side masters with at least 19 pt text, equivalent to 9.5 pt
+  when printed at 7.2 inches. Narrow sequential segments omit only in-bar counts
+  that would collide; exact counts stay in the tables.
+- `tables/t*.tex`: five compact captioned manuscript tables, with wrapped headers
+  and booktabs rules. Add `\usepackage{booktabs}`, then
+  `\input{tables/t02_mission.tex}`. These use `table*`, not shrink-to-fit wrappers.
+- `tables/*.csv` and `*.html`: exact numeric/supporting tables and titled,
+  scrollable readable versions; large evidence tables are not forced into LaTeX.
+- `data/episodes.csv`: byte-for-byte copy of the **full** canonical CSV, not a
+  reduced selection. `manifest.json` records its SHA256 and each export's source,
+  title, description, filename, stage and environment.
+
+Rebuild the entire bundle with one command from the repository root:
+
+```bash
+python -m scripts.paper_bundle
+# Optional versioned snapshot:
+python -m scripts.paper_bundle --output data/derived/vibtarve_paper_snapshot
+# Explicitly add the separate five-revision episode-1 development supplement:
+python -m scripts.paper_bundle --prompt-development-csv data/logs/btaudit2/btaudit2_molmo2_episode1_rows.csv
+```
+
+Each notebook refreshes its own section through the same exporter. The index
+flags missing stages or mixed CSV versions; rerun all three or use the command
+above after source changes. Available continuous-progress supporting tables are
+always included in the bundle, independently of the notebook display flag.
+Earlier `data/derived/paper_results/` exports are historical, not the current
+bundle. Rerunning overwrites only designated derived
+outputs; raw workbooks, BTs, states, and replay files are read-only. Notebook
+outputs remain cleared in Git; run locally to populate them.
+
+The shared [analysis module](../scripts/paper_results.py) analyzes that CSV,
+including embedded required-node, response, progress, and provenance data.
+It does not reopen workbooks, states, BTs, or replay configs. Only representative
+galleries open saved frame images. Its tests include missing-model
+exclusion, review confirmation, zero-second completions, four-node gates,
+unmatched timing events, and publication-table exports. See the
+[paper-results measurement details](btaudit2_dataset.md#paper-results-notebooks)
+before interpreting the original Qwen3-VL timing column.
+
+The [episode-1 auditor-review notebook](../notebooks/episode1_auditor_review.ipynb)
+(formerly `molmo2_data_review.ipynb`) compares legacy auditors, Qwen3.8 revisions,
+and Luna revisions using correct complete, correct incomplete, false complete,
+and false incomplete counts with explicit per-node eligibility. It pins its
+cohort to a saved replay manifest, excludes smoke sheets, and includes Luna-only
+charts and revision-selectable error drilldowns. It also retains a
+Qwen3.8 v1--v5-only chart below its mixed-auditor completion comparison.
+It reuses the loaded episode-1 dataframe and exports both layouts, counts,
+coverage, node detail, and its own datasheet/provenance to
+`vibtarve_paper/prompt_development/`. This is explicitly prompt development,
+not the selected-Qwen3.8 evaluation; the primary CSV and performance tables
+remain selected-prompt-only.
+
 ## 3. Obtain and audit existing data
 
 `data/` is intentionally ignored by Git. At this release there is **no public
@@ -84,21 +166,51 @@ mismatch, not necessarily inference failure. See the generated `audit.json`.
 See [dataset structure, provenance, and contribution rules](btaudit2_dataset.md).
 Missing data is an explicit prerequisite failure, not a zero-score result.
 
-To recreate legacy full-dataset visualization CSVs, use:
+Refresh the existing visualization datasheets after workbook changes:
 
 ```bash
 python scripts/build_btaudit2_visualization_dataset.py \
   --logs-dir data/logs/btaudit2 \
   --schedule data/logs/btaudit2/human_eval_schedule_btaudit2_30_per_scenario_4scenarios_20260721T000000Z.xlsx \
-  --episode-index-min 2 --episode-index-max 21
+  --force
 ```
 
-These tables use legacy reference models; they are **not** the Qwen3.8 comparison
-tables. The CLI rebuilds from inputs. When calling the cached loader in Python,
-use `force_rebuild=True` after changing a cohort, schedule, workbook, or model
-sheet. Existing cache filenames are not cohort identities. The schedule is a
-required input; listing an episode in a schedule is not proof that its review
-is finished.
+This one command rebuilds the all-episode datasheet and refreshes its
+episodes-2--21 evaluation counterpart and observation exports. The notebooks
+read only the evaluation datasheet. To refresh only that evaluation export,
+add `--episode-index-min 2 --episode-index-max 21`. Both paths use the same
+established builder, not a separate paper-data extractor.
+
+Qwen3.8 fields use `qwen38_*` and `node_<slot>_qwen38_*`, sourced exclusively
+from the immutable `qwen38_v4` sheet. Other Qwen3.8 revisions are not exported.
+The source-sheet name remains in `qwen38_review_sheet` as provenance; displayed
+performance labels are **Qwen3.8**. The existing cached loader automatically
+rebuilds older schemas missing these fields. Selected Luna v5 similarly uses
+`luna6_*` and `node_<slot>_luna6_*`, sourced only from `luna6_v5`, and is labeled
+**Luna 6**. Schema v4 includes its observations and cloud model/API/reasoning
+provenance. It also calibrates Luna's derived video times from saved frame
+indices and measured video duration using the existing replay convention.
+Original workbook timestamps are preserved in `stored_video_time_m:ss` and
+`stored_video_time_s`; `timing_basis` and `luna6_time_calibration_json` expose
+the mapping. This corrects the missing-decoder simulation-clock fallback in
+the original Luna environment without editing workbooks or repeating inference.
+Seven unreadable, unreviewed videos retain completion decisions but have
+explicitly unavailable numeric video times; no duration is inferred for them.
+Other Luna revisions remain tuning evidence, not evaluation models.
+Luna uses ten separate images per full window versus Qwen3.8's historical
+eight-frame contact sheets; this is not a controlled input-matched comparison.
+Use `--force` (or
+`force_rebuild=True` in Python) after editing source workbooks; schema
+compatibility alone does not detect content edits. The paper CSV reader
+reports an outdated schema with the refresh command rather than silently
+reopening workbooks. A scheduled episode still needs explicit completed-review
+status for paper metrics.
+
+Future replay with an existing video requires OpenCV or PyAV in the replay
+environment. An unreadable video now fails before inference rather than writing
+simulation seconds as video time; `replay_config.json` records the review clock.
+Frame-only fixtures without a video remain explicitly marked
+`simulation_no_video`.
 
 The schedule's episode directory names are resolved under the supplied
 `--logs-dir`, so historical workstation prefixes do not select a different local

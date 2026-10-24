@@ -11,7 +11,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 from urllib.parse import urlsplit
 
 from knowledge_base import KnowledgeBase
@@ -19,6 +19,9 @@ from knowledge_base import KnowledgeBase
 if TYPE_CHECKING:
     from openai import OpenAI
     from openai.types.chat import ChatCompletionContentPartParam
+    from openai.types.chat.completion_create_params import CompletionCreateParamsNonStreaming
+    from openai.types.responses.response_create_params import ResponseCreateParamsNonStreaming
+    from openai.types.shared import ReasoningEffort
     from PIL import Image
 
 EXECUTION_NODE_TYPES = {"action", "condition"}
@@ -26,7 +29,7 @@ EXECUTION_NODE_TYPES = {"action", "condition"}
 
 @dataclass
 class QwenContext:
-    """Runtime container for loaded Qwen model/processor and capability flags."""
+    """Runtime container for local models or remote clients and capability flags."""
     enabled: bool
     model: Any = None
     processor: Any = None
@@ -36,6 +39,126 @@ class QwenContext:
     attn_implementation: str = ""
     cpu_offload_active: bool = False
     vllm_client: Optional[VllmClient] = None
+    cloud_client: Optional[CloudClient] = None
+
+
+@dataclass
+class CloudClient:
+    """Remote multimodal transport; prompts and frame order remain client-owned."""
+    model: str
+    api_key: str = field(repr=False)
+    base_url: str = "https://api.openai.com/v1"
+    api: Literal["responses", "chat_completions"] = "responses"
+    timeout_s: float = 60.0
+    reasoning_effort: Optional[ReasoningEffort] = None
+    last_usage: Optional[Dict[str, Any]] = field(default=None, init=False)
+    _client: OpenAI = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        from openai import OpenAI
+
+        self.base_url = self.base_url.rstrip("/")
+        endpoint = urlsplit(self.base_url)
+        if (
+            endpoint.scheme not in {"http", "https"}
+            or not endpoint.hostname
+            or endpoint.username is not None
+            or endpoint.password is not None
+            or endpoint.query
+            or endpoint.fragment
+        ):
+            raise ValueError("Cloud base URL must be an HTTP(S) URL without credentials, query or fragment.")
+        if endpoint.scheme != "https" and endpoint.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("Cloud endpoints require HTTPS; HTTP is allowed only for loopback testing.")
+        if not self.model.strip() or not self.api_key.strip():
+            raise ValueError("Cloud model and API key must be nonempty.")
+        if self.api not in {"responses", "chat_completions"}:
+            raise ValueError("Cloud API must be responses or chat_completions.")
+        if not math.isfinite(self.timeout_s) or self.timeout_s <= 0:
+            raise ValueError("Cloud timeout must be a finite positive number.")
+        if self.reasoning_effort not in {None, "none", "minimal", "low", "medium", "high", "xhigh"}:
+            raise ValueError("Unsupported cloud reasoning effort.")
+        self._client = OpenAI(
+            base_url=self.base_url, api_key=self.api_key,
+            timeout=self.timeout_s, max_retries=0,
+        )
+
+    def generate(
+        self,
+        prompt_text: str,
+        images: List[Image.Image],
+        max_new_tokens: int,
+    ) -> str:
+        self.last_usage = None
+        if not isinstance(prompt_text, str) or not prompt_text.strip():
+            raise ValueError("Cloud generation requires a nonempty rendered prompt.")
+        if max_new_tokens <= 0:
+            raise ValueError("max_new_tokens must be positive.")
+        image_urls = []
+        for source in images:
+            buffer = io.BytesIO()
+            source.convert("RGB").save(buffer, format="JPEG", quality=92)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            image_urls.append(f"data:image/jpeg;base64,{encoded}")
+
+        if self.api == "responses":
+            params: ResponseCreateParamsNonStreaming = {
+                "model": self.model,
+                "input": [{
+                    "role": "user",
+                    "content": [
+                        *[{"type": "input_image", "detail": "high", "image_url": url} for url in image_urls],
+                        {"type": "input_text", "text": prompt_text},
+                    ],
+                }],
+                "max_output_tokens": max_new_tokens,
+                "store": False,
+            }
+            if self.reasoning_effort is not None:
+                params["reasoning"] = {"effort": self.reasoning_effort}
+            response = self._client.responses.create(**params)
+            if response.status != "completed":
+                reason = response.incomplete_details.reason if response.incomplete_details else response.status
+                raise RuntimeError(f"Cloud response was not completed ({reason}); do not use partial output.")
+            if any(part.type == "refusal" for item in response.output if item.type == "message" for part in item.content):
+                raise RuntimeError("Cloud model refused the request.")
+            text = response.output_text
+            usage = response.usage.model_dump() if response.usage is not None else None
+        else:
+            chat_params: CompletionCreateParamsNonStreaming = {
+                "model": self.model,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        *[{"type": "image_url", "image_url": {"url": url, "detail": "high"}} for url in image_urls],
+                        {"type": "text", "text": prompt_text},
+                    ],
+                }],
+                "max_completion_tokens": max_new_tokens,
+                "store": False,
+            }
+            if self.reasoning_effort is not None:
+                chat_params["reasoning_effort"] = self.reasoning_effort
+            completion = self._client.chat.completions.create(**chat_params)
+            if not completion.choices:
+                raise RuntimeError("Cloud model returned no completion choices.")
+            choice = completion.choices[0]
+            if choice.finish_reason != "stop":
+                raise RuntimeError(f"Cloud completion did not finish normally ({choice.finish_reason}).")
+            if choice.message.refusal:
+                raise RuntimeError("Cloud model refused the request.")
+            text = choice.message.content
+            usage = completion.usage.model_dump() if completion.usage is not None else None
+
+        if not isinstance(text, str) or not text.strip():
+            raise RuntimeError("Cloud model returned no assistant text.")
+        if not usage:
+            raise RuntimeError("Cloud model returned no usage; inspect provider billing before retrying.")
+        details = usage.get("output_tokens_details") or usage.get("completion_tokens_details") or {}
+        if self.reasoning_effort == "none" and details.get("reasoning_tokens"):
+            raise RuntimeError("Cloud model reported reasoning tokens despite effort=none.")
+        self.last_usage = usage
+        return text
 
 
 def _prepare_vllm_image(images: List[Image.Image]) -> Image.Image:
@@ -365,6 +488,11 @@ def release_qwen_gpu(ctx: QwenContext) -> None:
     """Release model resources and clear CUDA cache for long-lived processes."""
     if not ctx or not ctx.enabled:
         return
+    if ctx.cloud_client is not None:
+        ctx.cloud_client._client.close()
+        ctx.cloud_client = None
+        ctx.enabled = False
+        return
     if ctx.vllm_client is not None:
         ctx.vllm_client._client.close()
         ctx.vllm_client = None
@@ -664,6 +792,8 @@ def generate_text_only_response(
     max_new_tokens: int = 768,
 ) -> Optional[str]:
     """Convenience wrapper for text-only model response generation."""
+    if ctx and ctx.enabled and ctx.cloud_client is not None:
+        return ctx.cloud_client.generate(prompt_text, [], max_new_tokens)
     if ctx and ctx.enabled and ctx.vllm_client is not None:
         return ctx.vllm_client.generate(prompt_text, [], max_new_tokens)
     messages = build_text_messages(prompt_text)
@@ -677,6 +807,8 @@ def generate_text_image_response(
     max_new_tokens: int = 768,
 ) -> Optional[str]:
     """Convenience wrapper for image+text response generation from PIL image."""
+    if ctx and ctx.enabled and ctx.cloud_client is not None:
+        return ctx.cloud_client.generate(prompt_text, [image], max_new_tokens)
     if ctx and ctx.enabled and ctx.vllm_client is not None:
         return ctx.vllm_client.generate(prompt_text, [image], max_new_tokens)
     messages = build_text_image_messages(prompt_text)
@@ -695,6 +827,11 @@ def generate_text_image_response_from_path(
     max_new_tokens: int = 768,
 ) -> Optional[str]:
     """Convenience wrapper for image+text response generation from image path."""
+    if ctx and ctx.enabled and ctx.cloud_client is not None:
+        from PIL import Image
+
+        with Image.open(image_path) as image:
+            return ctx.cloud_client.generate(prompt_text, [image], max_new_tokens)
     if ctx and ctx.enabled and ctx.vllm_client is not None:
         from PIL import Image
 
@@ -718,6 +855,8 @@ def generate_text_video_response(
     frames = list(frames or [])
     if not frames:
         return None
+    if ctx and ctx.enabled and ctx.cloud_client is not None:
+        return ctx.cloud_client.generate(prompt_text, frames, max_new_tokens)
     if ctx and ctx.enabled and ctx.vllm_client is not None:
         return ctx.vllm_client.generate(prompt_text, frames, max_new_tokens)
     messages = build_text_video_messages(prompt_text, n_frames=len(frames))

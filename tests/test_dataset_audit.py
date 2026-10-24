@@ -124,13 +124,59 @@ class DatasetAuditTests(unittest.TestCase):
         with (
             patch.object(visualization, "_read_schedule", return_value=schedule),
             patch.object(visualization.nqcu.EpisodeWorkbookRowBuilder, "build_episode_row", return_value=base_row),
-            patch.object(visualization, "_read_model_sheet", return_value=(pd.DataFrame(), "")),
+            patch.object(visualization, "_read_model_sheet_from_excel", return_value=(pd.DataFrame(), "")),
         ):
             episodes, _ = visualization.build_btaudit2_visualization_dataset(
                 logs_dir=self.root, schedule_path=self.root / "schedule.xlsx",
             )
         self.assertEqual(episodes.iloc[0]["episode_path"], str(self.episode))
         self.assertTrue(episodes.iloc[0]["human_reviewed"])
+
+    def test_qwen38_sheet_selection_is_exact_and_optional(self):
+        names = ["qwen38_v4", "qwen38_v4_backup", "qwen38_v40", "qwen38_v1"]
+        spec = visualization.QWEN38_SPEC
+        self.assertEqual(visualization._select_model_sheet(names, spec), "qwen38_v4")
+        self.assertIsNone(visualization._select_model_sheet(["qwen38_v1", "qwen38_v5"], spec))
+        self.assertEqual(spec.prefix, "qwen38")
+
+    def test_luna_sheet_selection_uses_only_selected_v5(self):
+        spec = visualization.LUNA6_SPEC
+        names = ["luna6_v4", "luna6_v5_backup", "luna6_v50", "luna6_v5"]
+        self.assertEqual(visualization._select_model_sheet(names, spec), "luna6_v5")
+        self.assertIsNone(visualization._select_model_sheet(["luna6_v1", "luna6_v4"], spec))
+        self.assertEqual(spec.prefix, "luna6")
+
+    def test_old_cache_migrates_once_and_version_changes_invalidate_it(self):
+        episode_csv, observation_csv = self.root / "rows.csv", self.root / "observations.csv"
+        pd.DataFrame([{"episode_success_time": 0, "sim_success_final": False}]).to_csv(episode_csv, index=False)
+        pd.DataFrame([{"model_name": "qwen3"}]).to_csv(observation_csv, index=False)
+        fresh = pd.DataFrame([{
+            **{column: "[]" for column in visualization.CURRENT_SCHEMA_COLUMNS},
+            "visualization_schema_version": visualization.SCHEMA_VERSION,
+            "episode_dir": self.episode.name,
+        }])
+        with patch.object(visualization, "build_btaudit2_visualization_dataset", return_value=(
+            fresh, pd.DataFrame([{"model_name": "qwen38"}]),
+        )) as build:
+            first, _ = visualization.load_or_build_btaudit2_visualization_dataset(
+                episode_csv_path=episode_csv, observation_csv_path=observation_csv,
+            )
+            self.assertEqual(first.attrs["cache_status"], "built")
+            second, _ = visualization.load_or_build_btaudit2_visualization_dataset(
+                episode_csv_path=episode_csv, observation_csv_path=observation_csv,
+            )
+            self.assertEqual(second.attrs["cache_status"], "loaded")
+            self.assertEqual(build.call_count, 1)
+            fresh.assign(visualization_schema_version=0).to_csv(episode_csv, index=False)
+            visualization.load_or_build_btaudit2_visualization_dataset(
+                episode_csv_path=episode_csv, observation_csv_path=observation_csv,
+            )
+            self.assertEqual(build.call_count, 2)
+            fresh.drop(columns=["luna6_observations_json"]).to_csv(episode_csv, index=False)
+            visualization.load_or_build_btaudit2_visualization_dataset(
+                episode_csv_path=episode_csv, observation_csv_path=observation_csv,
+            )
+            self.assertEqual(build.call_count, 3)
 
 
 if __name__ == "__main__":

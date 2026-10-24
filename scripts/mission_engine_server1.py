@@ -22,6 +22,7 @@ import zmq
 from PIL import Image
 
 from mission_engine import (
+    CloudClient,
     QwenContext,
     VllmClient,
     generate_text_image_response,
@@ -41,6 +42,8 @@ SUPPORTED_MODELS = [
     "allenai/Molmo2-8B",
     "google/gemma-4-E4B-it",
     "qwen38",
+    "luna",
+    "cloud",
 ]
 
 
@@ -48,6 +51,24 @@ def b64_to_pil_rgb(b64_jpg: str) -> Image.Image:
     """Decode a base64 JPEG string into an RGB PIL image."""
     jpg_bytes = base64.b64decode(b64_jpg.encode("utf-8"))
     return Image.open(io.BytesIO(jpg_bytes)).convert("RGB")
+
+
+def _load_cloud_api_key(args: argparse.Namespace) -> str:
+    key_file = args.cloud_api_key_file
+    if key_file:
+        key = Path(key_file).expanduser().read_text(encoding="utf-8").strip()
+    else:
+        key = os.environ.get(args.cloud_api_key_env, "").strip()
+        if not key and args.model == "luna" and args.cloud_base_url.rstrip("/") == "https://api.openai.com/v1":
+            demo_key = Path.home() / ".config" / "dabtroll" / "openai_api_key"
+            if demo_key.is_file():
+                key = demo_key.read_text(encoding="utf-8").strip()
+    if not key:
+        raise ValueError(
+            f"No cloud API key configured. Set {args.cloud_api_key_env} or "
+            "provide --cloud_api_key_file (the notebook's key file also works for Luna)."
+        )
+    return key
 
 
 def _vllm_launch_command(args: argparse.Namespace) -> List[str]:
@@ -177,6 +198,29 @@ def main():
     ap.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct", choices=SUPPORTED_MODELS)
     ap.add_argument("--device", default="cuda")
     ap.add_argument(
+        "--cloud_base_url", default="https://api.openai.com/v1",
+        help="HTTPS API endpoint for luna/cloud; HTTP allowed only on loopback.",
+    )
+    ap.add_argument("--cloud_model", help="Provider model ID; defaults to gpt-6-luna for --model luna.")
+    ap.add_argument("--cloud_api", choices=["responses", "chat_completions"], default="responses")
+    ap.add_argument(
+        "--cloud_api_key_env", default="OPENAI_API_KEY",
+        help="Name of credential environment variable; never pass a secret on the command line.",
+    )
+    ap.add_argument(
+        "--cloud_api_key_file",
+        help="Credential file (overrides env); Luna also falls back to the demo key file on the official endpoint.",
+    )
+    ap.add_argument("--cloud_timeout_s", type=float, default=60.0)
+    ap.add_argument(
+        "--cloud_reasoning_effort", choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+        help="Omitted for generic cloud by default; Luna always uses none.",
+    )
+    ap.add_argument(
+        "--cloud_startup_warmup", action="store_true",
+        help="Explicitly opt into one paid cloud startup request; otherwise startup and health are local-only.",
+    )
+    ap.add_argument(
         "--vllm_base_url", default="http://127.0.0.1:8000/v1",
         help="Local managed vLLM endpoint, or existing endpoint with --vllm_external.",
     )
@@ -249,27 +293,52 @@ def main():
 
 
 def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
-    try:
-        import torch
+    is_cloud = args.model in {"luna", "cloud"}
+    torch_version = cuda_version = transformers_version = "not_loaded"
+    cuda_available = False
+    cuda_devices = 0
+    if not is_cloud:
+        try:
+            import torch
 
-        torch_version = str(getattr(torch, "__version__", "unknown"))
-        cuda_version = str(getattr(getattr(torch, "version", None), "cuda", "unknown"))
-        cuda_available = bool(torch.cuda.is_available())
-        cuda_devices = int(torch.cuda.device_count()) if cuda_available else 0
-    except Exception:
-        torch_version = "unavailable"
-        cuda_version = "unavailable"
-        cuda_available = False
-        cuda_devices = 0
+            torch_version = str(getattr(torch, "__version__", "unknown"))
+            cuda_version = str(getattr(getattr(torch, "version", None), "cuda", "unknown"))
+            cuda_available = bool(torch.cuda.is_available())
+            cuda_devices = int(torch.cuda.device_count()) if cuda_available else 0
+        except Exception:
+            torch_version = "unavailable"
+            cuda_version = "unavailable"
 
-    try:
-        import transformers
+        try:
+            import transformers
 
-        transformers_version = str(getattr(transformers, "__version__", "unknown"))
-    except Exception:
-        transformers_version = "unavailable"
+            transformers_version = str(getattr(transformers, "__version__", "unknown"))
+        except Exception:
+            transformers_version = "unavailable"
 
-    if args.model == "qwen38":
+    vllm_process = None
+    if is_cloud:
+        if args.enable_thinking:
+            raise ValueError("Cloud models use --cloud_reasoning_effort, not --enable_thinking.")
+        if args.model == "luna" and args.cloud_reasoning_effort not in {None, "none"}:
+            raise ValueError("Luna requires --cloud_reasoning_effort none, matching the demo.")
+        cloud_model = args.cloud_model or ("gpt-6-luna" if args.model == "luna" else "")
+        if not cloud_model.strip():
+            raise ValueError("--model cloud requires an explicit --cloud_model provider model ID.")
+        cloud_client = CloudClient(
+            model=cloud_model,
+            api_key=_load_cloud_api_key(args),
+            base_url=args.cloud_base_url,
+            api=args.cloud_api,
+            timeout_s=args.cloud_timeout_s,
+            reasoning_effort="none" if args.model == "luna" else args.cloud_reasoning_effort,
+        )
+        resources.callback(cloud_client._client.close)
+        qwen_ctx = QwenContext(
+            enabled=True, model_id=cloud_model, model_family=args.model,
+            attn_implementation="remote", cloud_client=cloud_client,
+        )
+    elif args.model == "qwen38":
         client = VllmClient(
             base_url=args.vllm_base_url,
             model=args.vllm_model,
@@ -309,6 +378,14 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
     sock.bind(f"tcp://{args.host}:{args.port}")
 
     print(f"[mission_engine_server] bound tcp://{args.host}:{args.port}")
+    if qwen_ctx.cloud_client is not None:
+        print(
+            f"[mission_engine_server] backend=cloud api={qwen_ctx.cloud_client.api} "
+            f"base_url={qwen_ctx.cloud_client.base_url} model={qwen_ctx.cloud_client.model} "
+            f"reasoning_effort={qwen_ctx.cloud_client.reasoning_effort} "
+            "video_input=frames store=False retries=0; requests send prompts/images to the provider",
+            flush=True,
+        )
     if qwen_ctx.vllm_client is not None:
         print(
             f"[mission_engine_server] backend=vllm base_url={qwen_ctx.vllm_client.base_url} "
@@ -320,7 +397,7 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
         f"[mission_engine_server] model={args.model} family={qwen_ctx.model_family} "
         f"attn={getattr(qwen_ctx, 'attn_implementation', '') or 'default'} "
         f"cpu_offload_active={bool(getattr(qwen_ctx, 'cpu_offload_active', False))} "
-        f"device={args.device} enable_thinking={bool(args.enable_thinking)} "
+        f"device={'remote' if is_cloud else args.device} enable_thinking={bool(args.enable_thinking)} "
         f"max_new_tokens={int(args.max_new_tokens)} bt_max_new_tokens={int(args.bt_max_new_tokens)}"
     )
     if qwen_ctx.model_family == "qwen3_5":
@@ -345,7 +422,9 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
         f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '')}"
     )
 
-    if not bool(args.disable_startup_warmup):
+    if is_cloud and not args.cloud_startup_warmup:
+        print("[mission_engine_server] cloud startup warmup disabled; no provider request sent", flush=True)
+    if not bool(args.disable_startup_warmup) and (not is_cloud or args.cloud_startup_warmup):
         try:
             t_warm = time.time()
             _ = generate_text_only_response(
@@ -355,7 +434,18 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
             )
             print(f"[mission_engine_server] startup warmup completed in {time.time() - t_warm:.3f}s")
         except Exception as warmup_exc:
+            if is_cloud:
+                raise
             print(f"[mission_engine_server] startup warmup skipped due to error: {warmup_exc}")
+
+    def _cloud_metadata() -> dict:
+        client = qwen_ctx.cloud_client
+        if client is None:
+            return {}
+        return {
+            "backend": "cloud", "cloud_api": client.api, "cloud_model": client.model,
+            "usage": client.last_usage,
+        }
 
     while True:
         if vllm_process is not None:
@@ -395,13 +485,23 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
                         "model": args.model,
                         "model_family": qwen_ctx.model_family,
                         "backend": "vllm" if qwen_ctx.vllm_client is not None else "transformers",
+                        **({
+                            "backend": "cloud",
+                            "cloud_base_url": qwen_ctx.cloud_client.base_url,
+                            "cloud_model": qwen_ctx.cloud_client.model,
+                            "cloud_api": qwen_ctx.cloud_client.api,
+                            "cloud_timeout_s": qwen_ctx.cloud_client.timeout_s,
+                            "cloud_reasoning_effort": qwen_ctx.cloud_client.reasoning_effort,
+                            "provider_checked": False,
+                            "health_scope": "local_configuration_only",
+                        } if qwen_ctx.cloud_client is not None else {}),
                         "vllm_base_url": qwen_ctx.vllm_client.base_url if qwen_ctx.vllm_client else None,
                         "vllm_model": qwen_ctx.vllm_client.model if qwen_ctx.vllm_client else None,
                         "vllm_managed": vllm_process is not None,
                         "vllm_pid": vllm_process.pid if vllm_process is not None else None,
                         "video_input": "contact_sheet" if qwen_ctx.vllm_client else "frames",
                         "enable_thinking": bool(args.enable_thinking),
-                        "device_arg": args.device,
+                        "device_arg": "remote" if is_cloud else args.device,
                         "torch_version": torch_version,
                         "cuda_version": cuda_version,
                         "cuda_available": cuda_available,
@@ -426,6 +526,8 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
 
             t0 = time.time()
             prompt_text = str(req.get("prompt_text", "")).strip()
+            if is_cloud:
+                prompt_text = str(req.get("prompt_text", ""))
             effective_non_bt_tokens = _effective_non_bt_max_tokens(args.max_new_tokens)
 
             if mode == "text":
@@ -435,7 +537,7 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
                     max_new_tokens=int(effective_non_bt_tokens),
                 )
                 dt = time.time() - t0
-                sock.send_json({"ok": True, "mode": "scene", "text": text, "latency_s": dt})
+                sock.send_json({"ok": True, "mode": "scene", "text": text, "latency_s": dt, **_cloud_metadata()})
                 continue
 
             if not images:
@@ -485,12 +587,13 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
                         "task_text": task_text,
                         "text": str(text or ""),
                         "latency_s": dt,
+                        **_cloud_metadata(),
                     }
                 )
                 continue
 
             if mode == "text_image":
-                if not prompt_text:
+                if not prompt_text.strip():
                     sock.send_json({"ok": False, "error": "prompt_text is required for text_image mode"})
                     continue
                 if image_path:
@@ -508,7 +611,7 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
                         max_new_tokens=int(effective_non_bt_tokens),
                     )
             elif mode in {"text_video", "video"}:
-                if not prompt_text:
+                if not prompt_text.strip():
                     sock.send_json({"ok": False, "error": "prompt_text is required for text_video mode"})
                     continue
                 text = generate_text_video_response(
@@ -518,7 +621,7 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
                     max_new_tokens=int(effective_non_bt_tokens),
                 )
             else:
-                if not prompt_text:
+                if not prompt_text.strip():
                     prompt_text = "Describe the scene."
                 if image_path:
                     text = generate_text_image_response_from_path(
@@ -536,7 +639,7 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
                     )
 
             dt = time.time() - t0
-            sock.send_json({"ok": True, "mode": "scene", "text": text, "latency_s": dt})
+            sock.send_json({"ok": True, "mode": "scene", "text": text, "latency_s": dt, **_cloud_metadata()})
             print(f"[mission_engine_server] response ok mode={mode} latency_s={dt:.3f}")
         except zmq.error.Again:
             continue

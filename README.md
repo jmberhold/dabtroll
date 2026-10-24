@@ -27,20 +27,41 @@ model weights and local environments are **not bundled with Git**.
   data prerequisites, model replay, and new simulations.
 - [BTAudit2 dataset guide](docs/btaudit2_dataset.md): artifact schema, notation,
   frozen cohorts, provenance audits, and human-review contributions.
+- [Public VIBTARVE dataset](https://huggingface.co/datasets/jmberhold/VIBTARVE):
+  recordings, human-review tables, auditor observations, summary CSVs, and
+  media under CC BY 4.0. No login or access request is required.
 - [Research tutorial](notebooks/btaudit2_research_tutorial.ipynb): read-only
   structure/provenance inspection and episode-1 comparison charts.
+- Paper results, in methodology order:
+  [corpus and Stage 1](notebooks/VIBTRAVE_Visualizations.ipynb),
+  [Stage 2 auditor sensitivity](notebooks/VIBTARVE_Visualization.ipynb), and
+  [Stages 3A--3E BT auditing](notebooks/VIBTARVE_Progress.ipynb).
+  Each runs independently and exports CSV/LaTeX tables and PDF/PNG figures,
+  including selected Qwen3.8 v4 and Luna v5. All three read the canonical
+  evaluation datasheet; prompt-development revisions are not performance models.
+  Open the local [paper bundle](data/derived/vibtarve_paper/index.html) for
+  short-labeled figures, titled tables (including five captioned LaTeX tables),
+  and the full source CSV copy. Rebuild all exports without opening notebooks:
+  `python -m scripts.paper_bundle`. Vector PDFs use a 7.2-inch manuscript width
+  with at least 9.5 pt text; PNG previews are 300 dpi. Generated data stays local.
 - [Contributing](CONTRIBUTING.md): code/testing, notebook policy, and data safety.
-- [Citations and unresolved licensing](docs/research_attribution.md): upstream
+- [Citations and licensing](docs/research_attribution.md): upstream
   attribution and publication/distribution requirements.
 
 The 2026-10-21 snapshot has 488 recordings: 24 episode-1 prompt-tuning recordings
 and 464 episode-2--21 recordings. Selected Qwen3.8 prompt v4 has verified model
 coverage on all 464 evaluation recordings (3,690 clean responses). Coverage is
-not an accuracy claim or proof of complete human review. See the dataset guide
+not an accuracy claim or proof of complete human review. Selected Luna v5 also
+covers all 464 evaluation recordings (9,469 clean responses) and is integrated
+as **Luna 6** in the same CSV-driven paper workflow. Its ten separate input
+frames differ from the historical Qwen3.8 eight-frame contact sheets.
+See the dataset guide
 for denominators, mixed-budget baseline caveats, and reproducibility limits.
 
-**Licensing is unresolved:** no code or dataset license has been selected.
-Do not assume linked upstream assets share a license or may be redistributed.
+**Dataset license:** the public VIBTARVE dataset is released under **CC BY 4.0**.
+**Software licensing remains unresolved:** no license has been selected for this
+implementation repository. Dataset terms do not relicense the code, model
+weights, or upstream simulator assets as standalone resources.
 
 ## Legacy DABTROLL runtime reference
 
@@ -123,6 +144,22 @@ CUDA_VISIBLE_DEVICES=1 python scripts/mission_engine_server1.py \
 ```
 
 Mission engine details and options are documented in [docs/mission_engine_server.md](docs/mission_engine_server.md).
+
+For **remote Luna** inference (no local model or GPU), activate the demo's
+`luna` environment and run:
+
+```bash
+conda activate luna
+python scripts/mission_engine_server1.py --model luna --host 127.0.0.1 --port 5560
+```
+
+This reuses `OPENAI_API_KEY` or the notebook's
+`~/.config/dabtroll/openai_api_key` file. Startup/health send no provider
+requests by default; generation sends prompts/images to the provider and may
+incur charges. See the [cloud-model setup guide](docs/mission_engine_server.md#remote-luna-and-other-cloud-models)
+for dependencies, credentials, a paid smoke test, usage reporting, and the
+generic `--model cloud` adapter for compatible Responses/Chat Completions APIs.
+Existing simulation/replay clients still connect to ZMQ port 5560.
 
 For the local **Qwen3.8-27B-W4A16-AutoRound-GPTQ** checkpoint
 [published by Vishva007](https://huggingface.co/Vishva007/Qwen3.8-27B-W4A16-AutoRound-GPTQ),

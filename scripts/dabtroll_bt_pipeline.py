@@ -993,8 +993,6 @@ def run_dabtroll_episode(
     )
     status_eval_every_steps = _status_eval_every_steps(config)
     status_window_frame_count = _status_window_frame_count(config)
-    if btaudit_enabled and int(config.status_window_frames) <= 0:
-        status_window_frame_count = max(int(status_window_frame_count), 8)
     outer_step_seconds = max(float(config.n_action_steps), 1.0) / max(float(config.control_freq_hz), 1e-6)
 
     obs, info = env.reset(seed=config.seed)
