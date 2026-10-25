@@ -233,7 +233,9 @@ def build_paper_results(
         frame = nodes[nodes["episode_dir"].isin(available)].copy()
         frame["model_key"], frame["model"] = key, label
         full_counts = obs.groupby("episode_dir")["model_node_count"].first()
-        frame["model_node_count"] = frame["episode_dir"].map(full_counts)
+        frame["model_node_count"] = pd.to_numeric(
+            frame["episode_dir"].map(full_counts), errors="raise",
+        ).astype(float)
         frame["position_comparable"] = frame["node_position"].le(frame["model_node_count"])
         frame["node_count_mismatch"] = frame["model_node_count"].notna() & frame["model_node_count"].ne(
             frame["episode_dir"].map(counts_by_episode)

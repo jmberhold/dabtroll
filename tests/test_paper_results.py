@@ -71,6 +71,14 @@ def fixture():
 
 
 class PaperResultsTests(unittest.TestCase):
+    def test_missing_models_keep_numeric_contract_counts(self):
+        result = build_paper_results(*fixture())
+        self.assertTrue(pd.api.types.is_numeric_dtype(result.node_model["model_node_count"]))
+        episodes, nodes, observations = fixture()
+        empty = build_paper_results(episodes, nodes, observations.iloc[:0])
+        self.assertTrue(pd.api.types.is_numeric_dtype(empty.node_model["model_node_count"]))
+        self.assertTrue(empty.tables["node_position_reconciliation"].empty)
+
     def test_ordinal_renaming_preserves_metrics_and_case_evidence(self):
         episodes, nodes, obs = fixture()
         obs["node_position"] = obs["canonical_node_id"].str.rsplit("_", n=1).str[-1].astype(int)
