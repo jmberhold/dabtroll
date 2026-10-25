@@ -284,9 +284,10 @@ def build_paper_results(
         "episode_dir", "scenario", "cohort", "model_key", "model", "human_reviewed",
         "required_nodes", "model_node_count", "node_count_mismatch",
     ]].copy()
-    reconciliation["reference_node_count"] = reconciliation["episode_dir"].map(
-        episodes.set_index("episode_dir")["execution_nodes"]
-    )
+    reconciliation["reference_node_count"] = pd.to_numeric(
+        reconciliation["episode_dir"].map(episodes.set_index("episode_dir")["execution_nodes"]),
+        errors="raise",
+    ).astype(float)
     reconciliation["node_count_mismatch"] = (
         reconciliation["model_node_count"].notna()
         & reconciliation["model_node_count"].ne(reconciliation["reference_node_count"])
