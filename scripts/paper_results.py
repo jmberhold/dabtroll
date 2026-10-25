@@ -55,6 +55,7 @@ TABLE_STAGES = {
     "completion_event_outcomes": "03",
     "sequential_completion_counts": "03",
     "disagreements": "03",
+    "node_position_reconciliation": "03",
 }
 
 
@@ -133,6 +134,7 @@ def load_paper_results(
             "workbook_available": True,
             "bt_semantic_rating": source["bt_semantic_rating"],
             "episode_path": source["episode_path"],
+            "model_node_contracts": json.loads(source["model_node_contracts_json"]),
             **{column: source[column] for column in (
                 "episode_success_time", "episode_success_step", "episode_success_frame_path",
             )},
@@ -150,6 +152,8 @@ def load_paper_results(
         episodes.append(record)
         for key in MODEL_LABELS:
             for observation in json.loads(source[f"{key}_observations_json"]):
+                if not {"node_position", "node_position_basis", "model_node_count"}.issubset(observation):
+                    raise ValueError(f"Missing positional metadata for {key} in {name}; rebuild the datasheet")
                 observation_rows.append({
                     **observation, "episode_dir": name, "model_name": key,
                     "cohort": cohort, "scenario": record["scenario"],
@@ -208,34 +212,94 @@ def build_paper_results(
         raise ValueError("Duplicate episode or episode-node keys")
     if not set(nodes["episode_dir"]).issubset(episodes["episode_dir"]):
         raise ValueError("Nodes reference unknown episodes")
+    observations = observations.copy()
+    if "node_position" not in observations:
+        positions = nodes.set_index(["episode_dir", "node_id"])["node_position"]
+        observations["node_position"] = [
+            positions.get((row.episode_dir, row.canonical_node_id), np.nan)
+            for row in observations.itertuples()
+        ]
+    if "model_node_count" not in observations:
+        observations["model_node_count"] = observations["episode_dir"].map(
+            episodes.set_index("episode_dir")["required_nodes"]
+        )
+    counts_by_episode = episodes.set_index("episode_dir")["execution_nodes"]
     frames = []
     for key, label in MODEL_LABELS.items():
         obs = observations[observations["model_name"].eq(key)]
+        if "source" in obs:
+            obs = obs[~obs["source"].eq("btstatus_complete_milestone")]
         available = set(obs["episode_dir"])
         frame = nodes[nodes["episode_dir"].isin(available)].copy()
         frame["model_key"], frame["model"] = key, label
+        full_counts = obs.groupby("episode_dir")["model_node_count"].first()
+        frame["model_node_count"] = pd.to_numeric(
+            frame["episode_dir"].map(full_counts), errors="raise",
+        ).astype(float)
+        frame["position_comparable"] = frame["node_position"].le(frame["model_node_count"])
+        frame["node_count_mismatch"] = frame["model_node_count"].notna() & frame["model_node_count"].ne(
+            frame["episode_dir"].map(counts_by_episode)
+        )
+        obs = obs[obs["node_position"].notna()]
         complete = obs[obs["model_status_norm"].eq("complete")]
-        completed_nodes = set(zip(complete["episode_dir"], complete["canonical_node_id"]))
-        counts = obs.groupby(["episode_dir", "canonical_node_id"]).size()
-        times = complete.groupby(["episode_dir", "canonical_node_id"])["video_time_s"].min()
+        completed_nodes = set(zip(complete["episode_dir"], complete["node_position"]))
+        counts = obs.groupby(["episode_dir", "node_position"]).size()
+        times = complete.groupby(["episode_dir", "node_position"])["video_time_s"].min()
         frame["model_complete"] = pd.Series([
-            (ep, node) in completed_nodes for ep, node in zip(frame["episode_dir"], frame["node_id"])
+            (ep, node) in completed_nodes for ep, node in zip(frame["episode_dir"], frame["node_position"])
         ], index=frame.index, dtype=bool)
         frame["directly_evaluated"] = pd.Series([
-            (ep, node) in counts.index for ep, node in zip(frame["episode_dir"], frame["node_id"])
+            (ep, node) in counts.index for ep, node in zip(frame["episode_dir"], frame["node_position"])
         ], index=frame.index, dtype=bool)
         frame["model_completion_s"] = [
-            times.get((ep, node), np.nan) for ep, node in zip(frame["episode_dir"], frame["node_id"])
+            times.get((ep, node), np.nan) for ep, node in zip(frame["episode_dir"], frame["node_position"])
         ]
         frames.append(frame)
     node_model = pd.concat(frames, ignore_index=True)
     comparable = set(episodes.loc[episodes["human_comparable"], "episode_dir"])
-    node_model["human_comparable"] = node_model["episode_dir"].isin(comparable)
+    node_model["human_comparable"] = node_model["episode_dir"].isin(comparable) & node_model["position_comparable"]
     episode_model = (
         node_model.groupby(["episode_dir", "model_key", "model"], sort=False)
-        .agg(model_complete=("model_complete", "all"), human_complete=("human_complete", "all"))
+        .agg(model_complete=("model_complete", "all"), human_complete=("human_complete", "all"),
+             model_node_count=("model_node_count", "first"),
+             node_count_mismatch=("node_count_mismatch", "any"))
         .reset_index().merge(episodes, on="episode_dir", validate="many_to_one")
     )
+    completed = observations[
+        observations["model_status_norm"].eq("complete") & observations["node_position"].notna()
+    ]
+    if "source" in completed:
+        completed = completed[~completed["source"].eq("btstatus_complete_milestone")]
+    completed_counts = completed.groupby(["episode_dir", "model_name"])["node_position"].nunique()
+    episode_model["model_complete"] = [
+        pd.notna(row.model_node_count)
+        and completed_counts.get((row.episode_dir, row.model_key), 0) == row.model_node_count
+        for row in episode_model.itertuples()
+    ]
+    episode_model["human_comparable"] &= (
+        episode_model["model_node_count"].eq(episode_model["execution_nodes"])
+        & episode_model["required_nodes"].eq(episode_model["execution_nodes"])
+    )
+    reconciliation = episode_model[[
+        "episode_dir", "scenario", "cohort", "model_key", "model", "human_reviewed",
+        "required_nodes", "model_node_count", "node_count_mismatch",
+    ]].copy()
+    reconciliation["reference_node_count"] = pd.to_numeric(
+        reconciliation["episode_dir"].map(episodes.set_index("episode_dir")["execution_nodes"]),
+        errors="raise",
+    ).astype(float)
+    reconciliation["node_count_mismatch"] = (
+        reconciliation["model_node_count"].notna()
+        & reconciliation["model_node_count"].ne(reconciliation["reference_node_count"])
+    )
+    reconciliation["shared_positions"] = reconciliation[["reference_node_count", "model_node_count"]].min(axis=1, skipna=False)
+    reconciliation["reference_only_positions"] = reconciliation["reference_node_count"] - reconciliation["shared_positions"]
+    reconciliation["model_only_positions"] = reconciliation["model_node_count"] - reconciliation["shared_positions"]
+    reconciliation["position_basis"] = [
+        row.model_node_contracts.get(row.model_key, {}).get("basis", "supplied_positions")
+        if hasattr(row, "model_node_contracts") else "supplied_positions"
+        for row in episode_model.itertuples()
+    ]
     evaluation = episodes[episodes["cohort"].eq("evaluation")]
     human_episode = nodes.groupby("episode_dir")["human_complete"].all()
     endpoint = evaluation[evaluation["human_comparable"]].copy()
@@ -323,6 +387,10 @@ def build_paper_results(
             "human_incomplete_nodes": confusion["tn"] + confusion["fp"],
             "directly_evaluated": int(frame["directly_evaluated"].sum()),
             "unreached_required": int((~frame["directly_evaluated"]).sum()),
+            "not_comparable_reference_positions": int((
+                node_model["episode_dir"].isin(endpoint["episode_dir"])
+                & node_model["model_key"].eq(key) & ~node_model["position_comparable"]
+            ).sum()),
             "reviewed_node_universe": int(nodes[nodes["episode_dir"].isin(endpoint["episode_dir"])].shape[0]),
         })
         frame = frame.sort_values(["episode_dir", "node_position"], kind="stable")
@@ -386,6 +454,7 @@ def build_paper_results(
     prompt_keys = ("qwen35_qwen3_prompt", "qwen35")
     prompt_episodes = episode_model[
         episode_model["cohort"].eq("evaluation") & episode_model["model_key"].isin(prompt_keys)
+        & episode_model["model_node_count"].notna()
     ]
     present = [
         set(prompt_episodes.loc[prompt_episodes["model_key"].eq(key), "episode_dir"])
@@ -402,8 +471,13 @@ def build_paper_results(
                 "complete": int(predictions.sum()),
                 "complete_pct": 100 * predictions.mean(),
             })
+    common_reviewed = set.intersection(*[
+        set(prompt_episodes.loc[
+            prompt_episodes["model_key"].eq(key) & prompt_episodes["human_comparable"], "episode_dir",
+        ]) for key in prompt_keys
+    ])
     prompt_errors = _metric_table(
-        prompt_episodes[prompt_episodes["human_comparable"]],
+        prompt_episodes[prompt_episodes["episode_dir"].isin(common_reviewed)],
         ["model_key", "model"], "human_complete", "model_complete",
     )
     sequential_counts = pd.DataFrame(sequential_rows).reindex(columns=[
@@ -426,6 +500,7 @@ def build_paper_results(
         + events["both_complete_missing_time"]
     )
     tables = {
+        "node_position_reconciliation": reconciliation,
         "corpus": pd.DataFrame(corpus_rows), "endpoint_validity": pd.DataFrame(endpoints),
         "endpoint_patterns": patterns,
         "review_coverage": episodes.groupby(["cohort", "scenario", "review_basis"], dropna=False).agg(
@@ -539,7 +614,7 @@ def representative_cases(results: PaperResults) -> pd.DataFrame:
         evidence = results.observations[
             results.observations["episode_dir"].eq(error["episode_dir"])
             & results.observations["model_name"].eq(error["model_key"])
-            & results.observations["canonical_node_id"].eq(error["node_id"])
+            & results.observations["node_position"].eq(error["node_position"])
         ].sort_values(["video_time_s", "review_row"], kind="stable")
         responses = evidence[evidence["source"].eq("mission_engine_response")]
         if error["disagreement"] == "Premature complete":
@@ -552,10 +627,13 @@ def representative_cases(results: PaperResults) -> pd.DataFrame:
             "evidence_time_s": decisive["video_time_s"] if decisive is not None else np.nan,
             "evidence_frame": _text(decisive["machine_frame"]) if decisive is not None else "",
             "model_notes": _text(decisive["model_notes"]) if decisive is not None else "",
+            "model_node_id": _text(decisive.get("node_id", decisive["canonical_node_id"])) if decisive is not None else "",
+            "node_position_basis": _text(decisive.get("node_position_basis")) if decisive is not None else "",
             "evidence_basis": "saved_response" if decisive is not None else "no_direct_response",
         })
     return pd.DataFrame(rows, columns=[
-        *errors.columns, "evidence_time_s", "evidence_frame", "model_notes", "evidence_basis",
+        *errors.columns, "evidence_time_s", "evidence_frame", "model_notes", "model_node_id",
+        "node_position_basis", "evidence_basis",
     ])
 
 
@@ -654,7 +732,8 @@ def plot_case(case: pd.Series) -> plt.Figure:
             axis.imshow(image)
         axis.set_title(f"{frame.name}\n{'response evidence' if frame.name == evidence else 'context frame'}")
         axis.axis("off")
-    figure.suptitle(f"{case['model']} | {case['disagreement']} | {case['scenario']}\n{case['node_id']}")
+    node_label = f"Node {int(case['node_position'])}" if "node_position" in case else case["node_id"]
+    figure.suptitle(f"{case['model']} | {case['disagreement']} | {case['scenario']}\n{node_label}")
     figure.tight_layout()
     layout_case_frames(figure)
     return figure

@@ -36,6 +36,10 @@ def fixture(root):
                 "human_completion_s": None, "human_complete": False, "reviewer_notes": "",
             }]),
             "luna6_time_calibration_json": "{}",
+            "model_node_contracts_json": json.dumps({
+                "luna6": {"node_count": 1, "bindings": {"grasp": 1},
+                          "basis": "saved_BT_ID_binding"},
+            }),
         })
         rows.append(record)
         for filename in ("bt.json", "bt_validation.json", "episode_manifest.json", "episode_outcome.json"):
@@ -172,6 +176,11 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(table.iloc[0]["code"], "001")
             self.assertTrue(json.loads(table.iloc[0]["path_json"])["path"].startswith("episodes/"))
             attempts = pd.read_parquet(output / "data/replay_attempts/evaluation.parquet")
+            episodes = pd.read_parquet(output / "data/episodes/evaluation.parquet")
+            self.assertEqual(
+                json.loads(episodes.iloc[0].model_node_contracts_json)["luna6"]["bindings"],
+                {"grasp": 1},
+            )
             self.assertEqual(json.loads(attempts.iloc[0].config_json)["server_health"]["host"],
                              "[PRIVATE_FIELD_REDACTED]")
             raw = pd.read_parquet(output / "data/workbook_rows/evaluation.parquet")
@@ -221,6 +230,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("split: evaluation", progress)
         self.assertNotIn("prompt_development.parquet", progress)
         self.assertNotIn("config_name: workbook_rows", card)
+        self.assertIn("extra positions are not comparable, not false incomplete", card)
+        self.assertIn("model_node_contracts_json", card)
         tags = card.split("tags:\n", 1)[1].split("configs:", 1)[0].splitlines()
         self.assertEqual(tags, [f"- {tag}" for tag in release.DATASET_TAGS])
         self.assertEqual(len(release.DATASET_TAGS), len(set(release.DATASET_TAGS)))

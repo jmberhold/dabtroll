@@ -41,9 +41,14 @@ STYLE = {
     "savefig.dpi": 300, "figure.facecolor": "white", "axes.facecolor": "white",
 }
 CLOCK_NOTE = (
-    "Original Qwen3-VL uses a historical source-clock convention: the CSV gives "
-    "4 s median timing error and 2/16 within +/-2 s, not the manuscript example's "
-    "1 s and 15/16. Reconcile those clocks before publishing cross-auditor timing claims. "
+    "Node comparisons use ordinal positions, not semantic BT equivalence. "
+    "Only shared positions are scored; extra positions are not false incomplete. "
+    "Whole-mission agreement excludes unequal node counts. Original IDs and binding "
+    "provenance are retained; some Qwen3 episode bindings use explicitly inferred "
+    "frame-zero response-prefix order with recorded full BT counts. "
+    "Original Qwen3-VL uses a historical source-clock convention. "
+    "Reconcile clocks before publishing cross-auditor timing claims; use current "
+    "timing tables rather than the earlier manuscript's exact-ID examples. "
     "Luna 6 uses ten separate images per full window (3.6 s first-to-last); historical "
     "Qwen3.8 uses eight-frame contact sheets (2.8 s first-to-last). These are not "
     "controlled input-matched comparisons, and local/cloud latency is not a controlled hardware benchmark. "
@@ -65,17 +70,19 @@ FIGURE_INFO = {
     "prompt": ("f05_prompt", "Qwen3.5 prompt sensitivity",
                "Common available full-corpus completion tendency and common human-reviewed FP/FN counts. Overall weights episodes, not task percentages. No Qwen3.8 development revisions are pooled."),
     "family": ("f06_families", "Node-family agreement",
-               "Balanced accuracy and FP/N plus FN/N shares of all reviewed family pairs, not conditional FPR/FNR. Unreached required nodes remain incomplete. Families reuse the established node-ID taxonomy."),
+               "Balanced accuracy and FP/N plus FN/N shares of shared reviewed positions, not conditional FPR/FNR. Unreached positions inside known contracts remain incomplete; extras are excluded. Families describe reference positions, not semantic equivalence with historical model nodes."),
     "mission": ("f07_mission", "Mission agreement by task",
-                "Human-referenced mission balanced accuracy. Human and model mission completion each require every required node; model-specific available cohorts remain explicit in tables."),
+                "Human-referenced positional mission balanced accuracy on equal full node counts only. Each side requires its own entire contract complete. Equal counts do not establish semantic BT equivalence; model-specific cohorts remain explicit."),
     "nodes": ("f08_nodes", "Required-node agreement by task",
-              "Human-referenced required-node balanced accuracy, including unreached nodes as incomplete. Direct evaluation coverage is separate from outcome agreement."),
+              "Human-referenced shared-position balanced accuracy. Unreached positions inside known contracts remain incomplete; extra positions are not comparable, not false incomplete. Direct coverage is separate."),
     "sequential": ("f09_sequence", "Sequential completion agreement",
                    "Each bar partitions its auditor-dependent eligible cohort into four outcome categories. Node 2 requires model completion of Node 1; Node 3 requires both prior completions. Tables retain Node 4 when present."),
     "timing": ("f10_timing", "Completion-event temporal alignment",
                "Event-union shares use TP+FP+FN, excluding both-incomplete pairs and retaining missing clocks. Distributions use matched timestamps only; signed error is auditor minus human. " + CLOCK_NOTE),
 }
 TABLE_INFO = {
+    "node_position_reconciliation": ("d21_node_positions", "Ordinal node comparability",
+                                    "Model-specific full node counts, shared and extra positions, and recorded or inferred binding provenance. Unequal counts are excluded from whole-mission agreement; only shared positions enter node metrics."),
     "corpus": ("d01_corpus", "Evaluation corpus", "Episode counts, simulator outcomes, required-node totals, and BT-size summaries. Simulator rates use known outcomes."),
     "endpoint_validity": ("d02_endpoint", "Endpoint validity", "Human-reference confusion counts and metrics for each simulator signal and task; unknown states are excluded and counted."),
     "endpoint_patterns": ("d03_patterns", "Endpoint agreement patterns", "Exact joint simulator-ever, final-frame, and human planned-path outcomes within confirmed reviews."),
@@ -87,9 +94,9 @@ TABLE_INFO = {
     "prompt_error_tradeoff": ("d09_errors", "Prompt error tradeoff", "FP/FN and other mission metrics on the common confirmed human-reviewed prompt cohort."),
     "node_family_metrics": ("d10_families", "Node-family metrics", "Family/auditor confusion counts, balanced accuracy, and FP/N and FN/N shares of all reviewed family pairs."),
     "auditability": ("d11_auditability", "BT auditability", "Structural completeness, explicit semantic-rating availability, and annotation coverage are separate measurements."),
-    "mission_metrics": ("d12_mission", "Mission agreement", "Human-reference confusion counts and metrics on available-model, confirmed reviewed episodes."),
-    "mission_by_scenario": ("d13_mission_task", "Mission agreement by task", "Per-task human-reference mission metrics with explicit model-specific sample sizes."),
-    "node_metrics": ("d14_nodes", "Required-node agreement and coverage", "Whole reviewed required-node universe within available model episodes; unreached nodes stay incomplete and direct coverage is separate."),
+    "mission_metrics": ("d12_mission", "Mission agreement", "Positional human-reference confusion counts on confirmed reviews with equal full node counts. Unequal counts are excluded; equal counts do not establish semantic BT equivalence."),
+    "mission_by_scenario": ("d13_mission_task", "Mission agreement by task", "Per-task positional mission metrics with explicit model-specific sample sizes, limited to equal full node counts."),
+    "node_metrics": ("d14_nodes", "Required-node agreement and coverage", "Shared ordinal positions within reviewed available model episodes; unreached nodes within known contracts stay incomplete. Extra positions are not comparable, not false incomplete. Direct coverage is separate."),
     "node_by_scenario": ("d15_nodes_task", "Required-node agreement by task", "Per-task required-node confusion counts and metrics on confirmed reviewed pairs."),
     "sequential_node_agreement": ("d16_sequence", "Operational-path node agreement", "Eligible, blocked, and directly evaluated counts after all preceding model completions; later cohorts are auditor-dependent, including Node 4."),
     "timing_alignment": ("d17_timing", "Completion timing", "Matched and unmatched events, missing clocks, signed/absolute errors, and inclusive +/-2 s agreement. " + CLOCK_NOTE),
@@ -457,8 +464,11 @@ def export_stage(results: paper.PaperResults, source_csv: Path | str, output_dir
                 preview = pd.concat([cases.drop_duplicates("model"), cases.query("disagreement == 'Premature complete'").head(1)]).drop_duplicates(["episode_dir", "model_key", "node_id"])
                 for index, (_, case) in enumerate(preview.iterrows(), 1):
                     label = f"c{index:02}_{case['model_key']}"
-                    description = (f"{case['scenario']} / {case['episode_dir']} / {case['node_id']}. "
-                                   f"Criterion: {case['success_criteria']}. Saved claim ({case['evidence_basis']}): {case['model_notes']}. "
+                    description = (f"{case['scenario']} / {case['episode_dir']} / Node {int(case['node_position'])}. "
+                                   f"Reference ID: {case['node_id']}; model ID: {case['model_node_id']}; "
+                                   f"binding: {case['node_position_basis']}. "
+                                   f"Reference criterion: {case['success_criteria']}. Saved claim ({case['evidence_basis']}): {case['model_notes']}. "
+                                   "Position matching does not assert equivalent historical BT criteria. "
                                    "Frames not matching the saved response token are context only. Selection is representative evidence, not a prevalence estimate.")
                     figure = paper.plot_case(case)
                     entries.append(_write_figure(output, stage, "case", label,

@@ -55,6 +55,32 @@ the immutable snapshot and original model/human sheets.
 
 ## Directory structure and data dictionary
 
+### Ordinal node comparison
+
+The visualization datasheets (schema 5) preserve source IDs and embed
+`model_node_contracts_json`, including each model's full ordered contract,
+ID-to-position bindings, node count, and binding provenance. Paper analysis
+compares **Node 1, Node 2, ...**, not identical ID strings or semantically
+equivalent BTs. Historical BT order is recovered from recorded synthesis
+responses and checked against the recording's BT hash when reused.
+
+Only shared positions are comparable. Extra reference/model positions do not
+enter false-incomplete/false-complete counts. A genuinely unreached position
+inside a known model contract remains incomplete. Whole-mission agreement
+requires equal full node counts; model-only completion tendencies use the
+model's own full count. Equal counts do **not** establish semantic equivalence.
+Family labels describe the reference position, not necessarily a historical
+model node's action.
+
+Where Qwen3 IDs match neither recorded contract, explicitly authorized inference
+uses first-seen response order only when the first response is at frame zero,
+known position anchors agree, and the full historical node count is available.
+These bindings are labeled `recorded_BT_count_and_observed_prefix_order`, not
+presented as verified historical IDs. Synthetic completion milestones cannot
+choose the contract or supply completion judgments. Unresolved contracts remain
+not comparable. The paper bundle's ordinal-comparability table exposes counts,
+extra positions, and binding provenance for each episode/model.
+
 ```text
 data/logs/btaudit2/
   <scenario>_episode_<index>_of_<count>_<run_tag>/

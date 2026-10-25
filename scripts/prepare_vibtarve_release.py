@@ -429,7 +429,16 @@ annotations remain available but are not automatically scored as ground truth.
 Primary selected auditor observations come from the canonical schema-{SCHEMA_VERSION}
 tables; historical conditions remain in workbook rows and replay-attempt records.
 Synthetic BT milestones are labeled separately from mission-engine responses.
-Unreached required nodes and missing model episodes must not be conflated.
+Synthetic milestones do not supply scoring judgments. Comparisons use ordinal
+Node 1, Node 2, etc., preserving raw IDs and full model-specific contracts in
+`model_node_contracts_json`. Observation rows retain `node_position`,
+`node_position_basis`, and `model_node_count`. Only shared positions are scored;
+extra positions are not comparable, not false incomplete. Unreached positions
+inside known contracts remain incomplete; missing model episodes are not negatives.
+Whole-mission accuracy excludes unequal full node counts. Positional agreement
+does not establish semantic equivalence of historical BT versions.
+Explicitly labeled legacy prefix inferences are not verified historical ID bindings.
+Unresolved contracts remain not comparable.
 
 Machine/simulation time differs from review-video time. Luna's derived video times use
 frame-index/duration scaling; original timestamps and timing-basis metadata are retained.
@@ -568,6 +577,7 @@ def prepare_release(root: Path, output: Path, *, expected_count: int = 488,
                 "outer_step_seconds": summary.get("outer_step_seconds", 0.4),
                 "steps_executed": summary.get("steps_executed"),
                 "luna6_time_calibration_json": source["luna6_time_calibration_json"],
+                "model_node_contracts_json": source["model_node_contracts_json"],
             }
             for lock in sorted([*episode.glob(".~lock.*"), *episode.glob("~$*")]):
                 issues.append({"episode_dir": name, "kind": "workbook_lock_present",
