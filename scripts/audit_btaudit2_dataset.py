@@ -115,14 +115,24 @@ def audit_episode(
         for config_path in sorted(episode.glob("*/replay_config.json")):
             try:
                 config = json.loads(config_path.read_text(encoding="utf-8"))
+                if not isinstance(config, dict):
+                    raise ValueError("Replay configuration must be a JSON object")
                 if config.get("review_sheet_name") != review_sheet:
                     continue
                 attempt: dict[str, Any] = {"path": config_path.parent.relative_to(root).as_posix()}
                 attempt["prompt_sha256"] = config.get("status_prompt_sha256")
                 attempt["max_new_tokens"] = config.get("status_max_new_tokens")
                 attempt["model"] = config.get("model")
-                quality = _summarize_mission_response_quality(read_jsonl(config_path.parent / "missionengine.jsonl"))
+                responses = read_jsonl(config_path.parent / "missionengine.jsonl")
+                quality = _summarize_mission_response_quality(responses)
                 attempt["quality"] = quality
+                attempt["response_prompts_match"] = not config.get("use_manifest_prompts", False) and all(
+                    response.get("status_prompt") != "manifest"
+                    and (not prompt_sha256 or response.get("status_prompt_sha256") == prompt_sha256)
+                    for response in responses
+                    if response.get("direction") == "response"
+                    and str(response.get("request_kind", "")).startswith("status_eval")
+                )
                 attempt["matches_settings"] = (
                     (not prompt_sha256 or attempt["prompt_sha256"] == prompt_sha256)
                     and (max_new_tokens is None or attempt["max_new_tokens"] == max_new_tokens)
@@ -135,6 +145,7 @@ def audit_episode(
         clean = [
             attempt for attempt in row["replay_attempts"]
             if attempt["matches_settings"] and attempt["snapshot_matches"]
+            and attempt["response_prompts_match"]
             and not attempt["quality"]["mission_has_errors"]
         ]
         row["matching_clean_attempts"] = len(clean)
@@ -181,7 +192,7 @@ def audit_dataset(
     for episode in sorted(selected):
         try:
             rows.append(audit_episode(episode, root, review_sheet, prompt_sha256, max_new_tokens))
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, BadZipFile) as exc:
             rows.append({"episode": episode.name, "issues": [f"unreadable:{exc}"], "warnings": []})
     return {
         "schema": "dabtroll_dataset_audit_v1", "episode_count": len(rows),

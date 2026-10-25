@@ -54,6 +54,7 @@ class DatasetAuditTests(unittest.TestCase):
         (output / "status_prompt_source.txt").write_text("prompt")
         (output / "missionengine.jsonl").write_text(json.dumps({
             "direction": "response", "request_kind": "status_eval",
+            "status_prompt_sha256": self.sha,
             "response_ok": True, "response_text": '{"status":"complete"}',
         }) + "\n")
 
@@ -85,6 +86,34 @@ class DatasetAuditTests(unittest.TestCase):
         self.assertEqual(self.audit()["issue_episode_count"], 1)
         (self.output / "status_prompt_source.txt").write_text("prompt")
         self.assertEqual(audit_dataset(self.root, 2, 21, "qwen38_v4", self.sha, 256)["issue_episode_count"], 1)
+
+    def test_non_object_replay_configuration_is_reported(self):
+        for value in ([], None, "not an object", 7):
+            with self.subTest(value=value):
+                (self.output / "replay_config.json").write_text(json.dumps(value))
+                report = self.audit()
+                self.assertTrue(any(issue.startswith("invalid_replay:") for issue in report["episodes"][0]["issues"]))
+
+    def test_corrupt_workbook_does_not_abort_cohort_audit(self):
+        self.workbook.write_bytes(b"not a zip workbook")
+        report = self.audit()
+        self.assertEqual(report["episode_count"], 1)
+        self.assertTrue(report["episodes"][0]["issues"][0].startswith("unreadable:"))
+
+    def test_manifest_and_mismatched_response_prompts_are_not_clean(self):
+        path = self.output / "missionengine.jsonl"
+        original = json.loads(path.read_text())
+        for changes in ({"status_prompt": "manifest"}, {"status_prompt_sha256": "other"},
+                        {"status_prompt_sha256": None}):
+            with self.subTest(changes=changes):
+                path.write_text(json.dumps({**original, **changes}) + "\n")
+                self.assertEqual(self.audit()["episodes"][0]["matching_clean_attempts"], 0)
+        path.write_text(json.dumps(original) + "\n")
+        config_path = self.output / "replay_config.json"
+        config = json.loads(config_path.read_text())
+        config["use_manifest_prompts"] = True
+        config_path.write_text(json.dumps(config))
+        self.assertEqual(self.audit()["episodes"][0]["matching_clean_attempts"], 0)
 
     def test_portable_manifest_rejects_duplicates_and_escapes(self):
         manifest = self.root / "manifest.txt"

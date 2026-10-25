@@ -22,6 +22,9 @@ REVIEW_SHEET_NAME="${REVIEW_SHEET_NAME:-Sheet2_MissionEngine_Review}"
 STATUS_PROMPT="${STATUS_PROMPT:-standard}"
 MODEL_LABEL="${MODEL_LABEL:-Qwen/Qwen3.5-9B}"
 OUTPUT_PREFIX="${OUTPUT_PREFIX:-qwen_3_5}"
+experiment_id="$("$PYTHON_BIN" "$SCRIPT_DIR/replay_experiment_identity.py" \
+  --review-sheet "$REVIEW_SHEET_NAME" --status-prompt "$STATUS_PROMPT" \
+  --model-label "$MODEL_LABEL" --output-prefix "$OUTPUT_PREFIX" --window-source "$WINDOW_SOURCE")" || exit 1
 
 run_tag="${1:-$(date -u +%Y%m%dT%H%M%SZ)}"
 run_root="${LOGS_ROOT}/btaudit2_sheet2_repair_runs/${run_tag}"
@@ -62,7 +65,7 @@ else
   echo "AUTO_ISSUE_MANIFEST=${issue_manifest_path}" | tee -a "${txt_report}"
 fi
 
-${PYTHON_BIN} - <<'PY' "${STATE_JSONL}" "${tmp_success}"
+${PYTHON_BIN} - <<'PY' "${STATE_JSONL}" "${tmp_success}" "${experiment_id}"
 import json
 import pathlib
 import sys
@@ -79,7 +82,7 @@ if state_path.exists():
             row = json.loads(text)
         except Exception:
             continue
-        if row.get('ok') and row.get('episode_dir'):
+        if isinstance(row, dict) and row.get('experiment_id') == sys.argv[3] and row.get('ok') and row.get('episode_dir'):
             success.add(str(row['episode_dir']))
 success_path.write_text("\n".join(sorted(success)) + ("\n" if success else ""), encoding='utf-8')
 PY
@@ -112,6 +115,7 @@ echo "RESUME_SKIP_SUCCESSES=${RESUME_SKIP_SUCCESSES}" | tee -a "${txt_report}"
 echo "REVIEW_SHEET_NAME=${REVIEW_SHEET_NAME}" | tee -a "${txt_report}"
 echo "WINDOW_SOURCE=${WINDOW_SOURCE}" | tee -a "${txt_report}"
 echo "STATUS_PROMPT=${STATUS_PROMPT}" | tee -a "${txt_report}"
+echo "EXPERIMENT_ID=${experiment_id}" | tee -a "${txt_report}"
 echo "MODEL_LABEL=${MODEL_LABEL}" | tee -a "${txt_report}"
 echo "OUTPUT_PREFIX=${OUTPUT_PREFIX}" | tee -a "${txt_report}"
 
@@ -221,22 +225,19 @@ print("\t".join([
 PY
     )" || parsed=""
 
+    IFS=$'\t' read -r qdir resp_rows err_rows cuda_rows has_err sheet_written reason <<< "${parsed}"
     if [[ -z "${parsed}" ]]; then
       echo "  FAIL parse_output_json" | tee -a "${txt_report}"
-      printf '{"ts":"%s","episode_dir":"%s","ok":false,"error":"parse_output_json"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ep}" >> "${STATE_JSONL}"
+      printf '{"experiment_id":"%s","ts":"%s","episode_dir":"%s","ok":false,"error":"parse_output_json"}\n' "${experiment_id}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ep}" >> "${STATE_JSONL}"
       printf '{"episode_dir":"%s","ok":false,"error":"parse_output_json"}\n' "${ep}" >> "${tmp_jsonl}"
       fail_count=$((fail_count + 1))
       consec_fails=$((consec_fails + 1))
-      continue
-    fi
-
-    IFS=$'\t' read -r qdir resp_rows err_rows cuda_rows has_err sheet_written reason <<< "${parsed}"
-
-    if [[ "${has_err}" == "0" && "${sheet_written}" == "1" ]]; then
+      consec_cuda_fails=0
+    elif [[ "${has_err}" == "0" && "${sheet_written}" == "1" ]]; then
       echo "  OK responses=${resp_rows} errors=${err_rows} cuda=${cuda_rows}" | tee -a "${txt_report}"
       echo "  OUT ${qdir}" | tee -a "${txt_report}"
-      printf '{"ts":"%s","episode_dir":"%s","ok":true,"qwen_output_dir":"%s","mission_response_rows":%s,"mission_response_error_rows":%s,"mission_cuda_error_rows":%s}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ep}" "${qdir}" "${resp_rows}" "${err_rows}" "${cuda_rows}" >> "${STATE_JSONL}"
+      printf '{"experiment_id":"%s","ts":"%s","episode_dir":"%s","ok":true,"qwen_output_dir":"%s","mission_response_rows":%s,"mission_response_error_rows":%s,"mission_cuda_error_rows":%s}\n' \
+        "${experiment_id}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ep}" "${qdir}" "${resp_rows}" "${err_rows}" "${cuda_rows}" >> "${STATE_JSONL}"
       printf '{"episode_dir":"%s","ok":true,"qwen_output_dir":"%s","mission_response_rows":%s,"mission_response_error_rows":%s,"mission_cuda_error_rows":%s}\n' \
         "${ep}" "${qdir}" "${resp_rows}" "${err_rows}" "${cuda_rows}" >> "${tmp_jsonl}"
       ok_count=$((ok_count + 1))
@@ -245,8 +246,8 @@ PY
     else
       echo "  FAIL responses=${resp_rows} errors=${err_rows} cuda=${cuda_rows} reason=${reason}" | tee -a "${txt_report}"
       echo "  OUT ${qdir}" | tee -a "${txt_report}"
-      printf '{"ts":"%s","episode_dir":"%s","ok":false,"error":"mission_error","error_detail":"%s","qwen_output_dir":"%s","mission_response_rows":%s,"mission_response_error_rows":%s,"mission_cuda_error_rows":%s}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ep}" "${reason}" "${qdir}" "${resp_rows}" "${err_rows}" "${cuda_rows}" >> "${STATE_JSONL}"
+      printf '{"experiment_id":"%s","ts":"%s","episode_dir":"%s","ok":false,"error":"mission_error","error_detail":"%s","qwen_output_dir":"%s","mission_response_rows":%s,"mission_response_error_rows":%s,"mission_cuda_error_rows":%s}\n' \
+        "${experiment_id}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ep}" "${reason}" "${qdir}" "${resp_rows}" "${err_rows}" "${cuda_rows}" >> "${STATE_JSONL}"
       printf '{"episode_dir":"%s","ok":false,"error":"mission_error","error_detail":"%s","qwen_output_dir":"%s","mission_response_rows":%s,"mission_response_error_rows":%s,"mission_cuda_error_rows":%s}\n' \
         "${ep}" "${reason}" "${qdir}" "${resp_rows}" "${err_rows}" "${cuda_rows}" >> "${tmp_jsonl}"
 
@@ -266,12 +267,12 @@ PY
 
     if [[ "${rc}" -eq 124 ]]; then
       echo "  TIMEOUT" | tee -a "${txt_report}"
-      printf '{"ts":"%s","episode_dir":"%s","ok":false,"error":"timeout","is_cuda":%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ep}" "${is_cuda}" >> "${STATE_JSONL}"
+      printf '{"experiment_id":"%s","ts":"%s","episode_dir":"%s","ok":false,"error":"timeout","is_cuda":%s}\n' "${experiment_id}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ep}" "${is_cuda}" >> "${STATE_JSONL}"
       printf '{"episode_dir":"%s","ok":false,"error":"timeout","is_cuda":%s}\n' "${ep}" "${is_cuda}" >> "${tmp_jsonl}"
     else
       echo "  FAIL exit=${rc}" | tee -a "${txt_report}"
       printf '%s\n' "${out}" | tail -n 20 | sed 's/^/    /' | tee -a "${txt_report}"
-      printf '{"ts":"%s","episode_dir":"%s","ok":false,"error":"exit_%s","is_cuda":%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ep}" "${rc}" "${is_cuda}" >> "${STATE_JSONL}"
+      printf '{"experiment_id":"%s","ts":"%s","episode_dir":"%s","ok":false,"error":"exit_%s","is_cuda":%s}\n' "${experiment_id}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${ep}" "${rc}" "${is_cuda}" >> "${STATE_JSONL}"
       printf '{"episode_dir":"%s","ok":false,"error":"exit_%s","is_cuda":%s}\n' "${ep}" "${rc}" "${is_cuda}" >> "${tmp_jsonl}"
     fi
 
@@ -310,7 +311,7 @@ PY
   fi
 done
 
-${PYTHON_BIN} - <<'PY' "${tmp_targets}" "${STATE_JSONL}" "${pending_manifest}"
+${PYTHON_BIN} - <<'PY' "${tmp_targets}" "${STATE_JSONL}" "${pending_manifest}" "${experiment_id}"
 import json
 import pathlib
 import sys
@@ -329,7 +330,7 @@ if state_path.exists():
             row = json.loads(text)
         except Exception:
             continue
-        if row.get('ok') and row.get('episode_dir'):
+        if isinstance(row, dict) and row.get('experiment_id') == sys.argv[4] and row.get('ok') and row.get('episode_dir'):
             success.add(str(row['episode_dir']))
 
 remaining = [ep for ep in targets if ep not in success]
@@ -371,7 +372,7 @@ ok_count = sum(1 for r in rows if r.get('ok'))
 fail_count = sum(1 for r in rows if not r.get('ok'))
 
 payload = {
-    'ok': True,
+    'ok': not stopped_early and not fail_count and not remaining,
     'stopped_early': stopped_early,
     'stop_reason': stop_reason,
     'run_rows_count': len(rows),
@@ -390,8 +391,11 @@ print('RUN_OK_COUNT', ok_count)
 print('RUN_FAIL_COUNT', fail_count)
 print('REMAINING_COUNT', len(remaining))
 print('PENDING_MANIFEST', pending_manifest)
+raise SystemExit(0 if payload['ok'] else 1)
 PY
+report_status=$?
 
 echo "TXT_REPORT ${txt_report}"
 echo "ERROR_REPORT ${error_report}"
 echo "STATE_JSONL ${STATE_JSONL}"
+exit "${report_status}"

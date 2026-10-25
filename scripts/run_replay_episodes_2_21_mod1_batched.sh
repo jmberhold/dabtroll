@@ -9,7 +9,11 @@ MISSION_HOST="${MISSION_HOST:-127.0.0.1}"
 MISSION_PORT="${MISSION_PORT:-5560}"
 MISSION_TIMEOUT_MS="${MISSION_TIMEOUT_MS:-30000}"
 REVIEW_SHEET_NAME="${REVIEW_SHEET_NAME:-sheet4_qwen3_5_mod1_MissionEngine_Review}"
-STATUS_PROMPT="${STATUS_PROMPT:-qwen3_5}"
+if [[ "$REVIEW_SHEET_NAME" == "sheet3_qwen3_5_MissionEngine_Review" ]]; then
+  STATUS_PROMPT="${STATUS_PROMPT:-standard}"
+else
+  STATUS_PROMPT="${STATUS_PROMPT:-qwen3_5}"
+fi
 MODEL_LABEL="${MODEL_LABEL:-Qwen/Qwen3.5-9B}"
 OUTPUT_PREFIX="${OUTPUT_PREFIX:-qwen_3_5}"
 WINDOW_SOURCE="${WINDOW_SOURCE:-frames}"
@@ -33,6 +37,12 @@ if [[ "$REVIEW_SHEET_NAME" == *"molmo2"* || "$OUTPUT_PREFIX" == molmo2* ]]; then
     exit 1
   fi
 fi
+
+experiment_id="$("$PYTHON_BIN" "$SCRIPT_DIR/replay_experiment_identity.py" \
+  --review-sheet "$REVIEW_SHEET_NAME" --status-prompt "$STATUS_PROMPT" \
+  --model-label "$MODEL_LABEL" --output-prefix "$OUTPUT_PREFIX" --window-source "$WINDOW_SOURCE" \
+  --eval-seconds "$STATUS_EVAL_SECONDS" --window-seconds "$STATUS_WINDOW_SECONDS")" || exit 1
+printf '%s\n' "$experiment_id" > "$run_root/experiment_id.txt"
 
 eligible_manifest="$run_root/eligible_episodes_2_21_manifest.txt"
 target_manifest="$run_root/target_manifest.txt"
@@ -96,7 +106,7 @@ if [[ "$target_count" -eq 0 ]]; then
 fi
 
 # Build a set of episodes that have already completed successfully in past mod1 2-21 runs.
-"$PYTHON_BIN" - <<'PY' "$HISTORY_RUNS_ROOT" "$successful_history_manifest"
+"$PYTHON_BIN" - <<'PY' "$HISTORY_RUNS_ROOT" "$successful_history_manifest" "$experiment_id"
 import pathlib
 import re
 import sys
@@ -111,6 +121,9 @@ out_re = re.compile(r'^\s+OUT\s+(.+)$')
 ok_eps = set()
 if history_root.exists():
     for report in sorted(history_root.glob('*/batch_*/report.txt')):
+        identity_path = report.parents[1] / "experiment_id.txt"
+        if not identity_path.is_file() or identity_path.read_text().strip() != sys.argv[3]:
+            continue
         current_ep = None
         current_ok = False
         for line in report.read_text(encoding='utf-8', errors='ignore').splitlines():

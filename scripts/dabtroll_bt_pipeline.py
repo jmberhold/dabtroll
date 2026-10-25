@@ -1207,7 +1207,7 @@ def run_dabtroll_episode(
         "image_path": str(start_frame_path),
         "frames_b64": [],
         "mission_name": str(mission_name),
-        "task_text": str(default_task or high_level_task),
+        "task_text": audit_policy_prompt,
         "bt_variant": "btaudit" if btaudit_enabled else "",
         "bt_max_new_tokens": int(config.bt_max_new_tokens),
     }

@@ -151,10 +151,19 @@ Primary batch wrapper:
 Key defaults in that script:
 
 - `REVIEW_SHEET_NAME=sheet4_qwen3_5_mod1_MissionEngine_Review`
-- `WINDOW_SOURCE=manifest`
+- `WINDOW_SOURCE=frames`
 - `BATCH_SIZE=10`
 - `STOP_ON_CUDA=1`
 - `AUTO_SKIP_COMPLETED=1`
+
+Sheet 3 defaults to `STATUS_PROMPT=standard`; Sheet 4 defaults to `qwen3_5`.
+An explicit `STATUS_PROMPT` overrides either default. Resume/history matching
+requires the same review sheet, prompt-content hash, model label, output prefix,
+window source, and timing overrides. Unidentified historical successes are not
+automatically reused. Batched runs save `experiment_id.txt`; Sheet 2 repair
+state rows carry `experiment_id` even with a custom shared `STATE_JSONL`.
+Sheet 2 repairs save reports and exit nonzero after any failure, early stop,
+or pending episode; malformed replay output also obeys failure limits.
 
 For self-contained reruns (recommended in current campaigns), override to frames and explicit sheet name.
 
