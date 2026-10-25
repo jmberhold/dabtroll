@@ -71,6 +71,49 @@ def fixture():
 
 
 class PaperResultsTests(unittest.TestCase):
+    def test_incomplete_reference_criteria_do_not_shorten_full_mission_contract(self):
+        episodes, nodes, obs = fixture()
+        nodes = nodes[~(nodes.episode_dir.eq("b") & nodes.node_position.eq(1))]
+        episodes.loc[episodes.episode_dir.eq("b"), "required_nodes"] = 1
+        obs["node_position"] = obs["canonical_node_id"].str.rsplit("_", n=1).str[-1].astype(int)
+        obs["model_node_count"] = obs["episode_dir"].map(
+            episodes.set_index("episode_dir")["execution_nodes"])
+        result = build_paper_results(episodes, nodes, obs)
+        remaining = result.node_model.query("episode_dir == 'b'").iloc[0]
+        self.assertEqual(remaining.node_position, 2)
+        self.assertTrue(remaining.position_comparable)
+        mission = result.episode_model.query("episode_dir == 'b'").iloc[0]
+        self.assertTrue(mission.model_complete)
+        self.assertFalse(mission.human_comparable)
+        comparison = result.tables["node_position_reconciliation"].query("episode_dir == 'b'").iloc[0]
+        self.assertEqual(comparison.reference_node_count, 2)
+        self.assertEqual(comparison.model_node_count, 2)
+        self.assertFalse(comparison.node_count_mismatch)
+
+    def test_condition_slots_remain_distinct_and_unused_slots_empty(self):
+        spec = dataset.LUNA6_SPEC
+        observations = dataset._standardize_observations(pd.DataFrame({
+            "node_id": ["node_condition_first", "node_condition_second"],
+            "model_status": ["complete", "complete"],
+            "video_time_m:ss": ["0:01", "0:02"],
+        }), "luna6_v5", spec, {})
+        observations["node_position"] = [1, 2]
+        observations["model_node_count"] = 2
+        record = {
+            "required_nodes_json": json.dumps([
+                {"node_id": "node_condition_first", "node_position": 1},
+                {"node_id": "node_condition_second", "node_position": 2},
+            ]),
+            "node_1_node_id": "node_condition_first",
+            "node_2_node_id": "node_condition_second",
+        }
+        dataset.nqcu._add_molmo_episode_fields(record, observations, "luna6", "luna6")
+        self.assertEqual(record["node_1_luna6_model_completion_time"], "0:01")
+        self.assertEqual(record["node_2_luna6_model_completion_time"], "0:02")
+        for slot in (3, 4):
+            self.assertEqual(record[f"node_{slot}_luna6_observation_count"], 0)
+            self.assertFalse(record[f"node_{slot}_luna6_position_comparable"])
+
     def test_missing_models_keep_numeric_contract_counts(self):
         result = build_paper_results(*fixture())
         self.assertTrue(pd.api.types.is_numeric_dtype(result.node_model["model_node_count"]))
@@ -481,8 +524,12 @@ class PaperResultsTests(unittest.TestCase):
             )
             embedded = json.loads(episodes.iloc[0]["luna6_observations_json"])[0]
             self.assertEqual(embedded["node_position"], 1)
-            self.assertEqual(embedded["model_node_count"], 1)
+            self.assertEqual(embedded["model_node_count"], 2)
             self.assertEqual(embedded["node_position_basis"], "saved_BT_ID_binding")
+            self.assertEqual(
+                json.loads(episodes.iloc[0]["model_node_contracts_json"])["luna6"]["nodes"][1]["node_id"],
+                "node_action_empty",
+            )
             self.assertEqual(embedded["stored_video_time_m:ss"], "0:00")
             self.assertEqual(embedded["stored_video_time_s"], 0)
             self.assertEqual(embedded["timing_basis"], "frame_index_scaled_to_video_duration")
@@ -503,7 +550,23 @@ class PaperResultsTests(unittest.TestCase):
             self.assertEqual((corpus.success_ever, corpus.final_frame_success), (1, 0))
             self.assertTrue(result.tables["mission_metrics"].empty)
             self.assertEqual(result.nodes.iloc[0]["human_completion_s"], 0)
+            self.assertEqual(result.node_model.iloc[0]["model_node_count"], 2)
             self.assertEqual(result.tables["auditability"].iloc[0]["structurally_incomplete_nodes"], 1)
+            standardize = dataset._standardize_observations
+
+            def blank_raw_ids(*args, **kwargs):
+                return standardize(*args, **kwargs).assign(node_id="")
+
+            with patch.object(dataset, "_standardize_observations", side_effect=blank_raw_ids), \
+                    patch.object(dataset, "_safe_video_duration_seconds", return_value=2.0):
+                blank_episodes, blank_observations = dataset.build_btaudit2_visualization_dataset(
+                    logs_dir=root, schedule_path=schedule,
+                )
+            self.assertTrue(blank_observations.node_id.eq("").all())
+            self.assertTrue(blank_observations.node_position.eq(1).all())
+            self.assertEqual(
+                json.loads(blank_episodes.iloc[0]["luna6_observations_json"])[0]["node_position"], 1,
+            )
             after = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in before}
             self.assertEqual(before, after)
             manifest.write_text(name + "\n" + name + "\n")

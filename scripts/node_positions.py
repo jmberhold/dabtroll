@@ -67,8 +67,12 @@ def original_contract(episode: Path, cache: dict) -> dict:
             text = row.get("response_text") or response.get("text")
             if not text:
                 continue
+            # Match rollout JSON extraction without importing the inference runtime.
+            start, end = text.find("{"), text.rfind("}")
+            if start < 0 or end <= start:
+                continue
             try:
-                tree = json.loads(text)
+                tree = json.loads(text[start:end + 1])
             except json.JSONDecodeError:
                 continue
             if isinstance(tree, dict) and isinstance(tree.get("root"), dict):

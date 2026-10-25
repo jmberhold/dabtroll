@@ -68,7 +68,7 @@ class NodePositionTests(unittest.TestCase):
             ]}}
             (source / "missionengine.jsonl").write_text(json.dumps({
                 "direction": "response", "request_kind": "bt",
-                "response_text": json.dumps(tree),
+                "response_text": "Recorded BT:\n```json\n" + json.dumps(tree) + "\n```\n",
             }) + "\n")
             (source / "pipeline_trace.jsonl").write_text(json.dumps({"event": "bt_ready", "bt_hash": "abc"}) + "\n")
             events = [

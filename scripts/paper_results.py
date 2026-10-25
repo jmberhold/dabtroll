@@ -223,7 +223,7 @@ def build_paper_results(
         observations["model_node_count"] = observations["episode_dir"].map(
             episodes.set_index("episode_dir")["required_nodes"]
         )
-    counts_by_episode = episodes.set_index("episode_dir")["required_nodes"]
+    counts_by_episode = episodes.set_index("episode_dir")["execution_nodes"]
     frames = []
     for key, label in MODEL_LABELS.items():
         obs = observations[observations["model_name"].eq(key)]
@@ -276,13 +276,23 @@ def build_paper_results(
         and completed_counts.get((row.episode_dir, row.model_key), 0) == row.model_node_count
         for row in episode_model.itertuples()
     ]
-    episode_model["human_comparable"] &= episode_model["model_node_count"].eq(episode_model["required_nodes"])
+    episode_model["human_comparable"] &= (
+        episode_model["model_node_count"].eq(episode_model["execution_nodes"])
+        & episode_model["required_nodes"].eq(episode_model["execution_nodes"])
+    )
     reconciliation = episode_model[[
         "episode_dir", "scenario", "cohort", "model_key", "model", "human_reviewed",
         "required_nodes", "model_node_count", "node_count_mismatch",
     ]].copy()
-    reconciliation["shared_positions"] = reconciliation[["required_nodes", "model_node_count"]].min(axis=1, skipna=False)
-    reconciliation["reference_only_positions"] = reconciliation["required_nodes"] - reconciliation["shared_positions"]
+    reconciliation["reference_node_count"] = reconciliation["episode_dir"].map(
+        episodes.set_index("episode_dir")["execution_nodes"]
+    )
+    reconciliation["node_count_mismatch"] = (
+        reconciliation["model_node_count"].notna()
+        & reconciliation["model_node_count"].ne(reconciliation["reference_node_count"])
+    )
+    reconciliation["shared_positions"] = reconciliation[["reference_node_count", "model_node_count"]].min(axis=1, skipna=False)
+    reconciliation["reference_only_positions"] = reconciliation["reference_node_count"] - reconciliation["shared_positions"]
     reconciliation["model_only_positions"] = reconciliation["model_node_count"] - reconciliation["shared_positions"]
     reconciliation["position_basis"] = [
         row.model_node_contracts.get(row.model_key, {}).get("basis", "supplied_positions")

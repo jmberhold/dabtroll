@@ -420,7 +420,7 @@ def _read_result_metadata(episode_path: Path) -> dict[str, object]:
     required = [node for node in execution_nodes if node["required"]]
     if len({node["node_id"] for node in required}) != len(required):
         raise ValueError(f"Duplicate required nodes: {episode_path.name}")
-    if required and all(pd.notna(node["human_order"]) for node in required):
+    if required and len(required) == len(execution_nodes) and all(pd.notna(node["human_order"]) for node in required):
         for position, node in enumerate(sorted(required, key=lambda n: float(n["human_order"])), 1):
             node["node_position"] = position
     for node in required:
@@ -568,13 +568,6 @@ def build_btaudit2_visualization_dataset(
 
         record["luna6_time_calibration_json"] = "{}"
         reference_nodes = ordered_nodes(json.loads((episode_path / "bt.json").read_text()))
-        required_positions = {
-            node["node_id"]: node["node_position"] for node in json.loads(record["required_nodes_json"])
-        }
-        reference_nodes = [
-            {**node, "node_position": required_positions[node["node_id"]]}
-            for node in reference_nodes if node["node_id"] in required_positions
-        ]
         historical = original_contract(episode_path, contract_cache)
         contracts = {}
         with pd.ExcelFile(workbook_path) as excel:
@@ -597,7 +590,10 @@ def build_btaudit2_visualization_dataset(
                     reference_nodes, historical, observations.to_dict("records"), spec.model_name,
                 )
                 contracts[spec.model_name] = contract
-                observations["node_position"] = observations["node_id"].map(contract["bindings"])
+                identifiers = observations["node_id"].where(
+                    observations["node_id"].ne(""), observations["canonical_node_id"],
+                )
+                observations["node_position"] = identifiers.map(contract["bindings"])
                 observations["node_position_basis"] = contract["basis"]
                 observations["model_node_count"] = contract["node_count"]
                 if spec == LUNA6_SPEC:

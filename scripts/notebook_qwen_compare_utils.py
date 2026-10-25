@@ -2604,14 +2604,14 @@ def _add_molmo_episode_fields(
     episode_rows["_canonical_node_id"] = episode_rows["node_id"].map(_canonical_action_node_id)
     positional = "node_position" in episode_rows and "required_nodes_json" in record
     positions = {
-        _canonical_action_node_id(node["node_id"]): node["node_position"]
+        (_canonical_action_node_id(node["node_id"]) or str(node["node_id"]).strip()): node["node_position"]
         for node in json.loads(record["required_nodes_json"])
     } if positional else {}
 
     for slot in range(1, 5):
         node_prefix = f"node_{slot}"
         node_id = str(record.get(f"{node_prefix}_node_id", "") or "").strip()
-        node_key = _canonical_action_node_id(node_id)
+        node_key = _canonical_action_node_id(node_id) or node_id
         node_rows = episode_rows[
             episode_rows["_canonical_node_id"].eq(node_key)
         ].copy() if node_key else episode_rows.iloc[0:0].copy()
