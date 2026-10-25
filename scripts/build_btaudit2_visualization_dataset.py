@@ -16,11 +16,13 @@ import pandas as pd
 
 try:
     from scripts import notebook_qwen_compare_utils as nqcu
+    from scripts.node_positions import ordered_nodes, original_contract, reconcile_positions
     from scripts.replay_video_utils import (
         _find_primary_video_path, _fmt_mmss_from_seconds, _safe_video_duration_seconds,
     )
 except ModuleNotFoundError:
     import notebook_qwen_compare_utils as nqcu
+    from node_positions import ordered_nodes, original_contract, reconcile_positions
     from replay_video_utils import (
         _find_primary_video_path, _fmt_mmss_from_seconds, _safe_video_duration_seconds,
     )
@@ -36,7 +38,7 @@ DEFAULT_EPISODE_CSV_PATH = DEFAULT_LOGS_DIR / "btaudit2_all_episodes_visualizati
 DEFAULT_OBSERVATION_CSV_PATH = DEFAULT_LOGS_DIR / "btaudit2_all_episodes_visualization_observations.csv"
 DEFAULT_EVALUATION_EPISODE_CSV_PATH = DEFAULT_LOGS_DIR / "btaudit2_episodes_2_21_visualization_rows.csv"
 DEFAULT_EVALUATION_OBSERVATION_CSV_PATH = DEFAULT_LOGS_DIR / "btaudit2_episodes_2_21_visualization_observations.csv"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,7 @@ QWEN38_SPEC = ModelSpec("qwen38", "qwen38", 0, (), "qwen38_v4")
 LUNA6_SPEC = ModelSpec("luna6", "luna6", 0, (), "luna6_v5")
 ALL_MODEL_SPECS = MODEL_SPECS + (QWEN38_SPEC, LUNA6_SPEC)
 CURRENT_SCHEMA_COLUMNS = {
+    "model_node_contracts_json",
     "visualization_schema_version", "required_nodes_json", "replay_provenance_json",
     "reviewer_progress_points_json", "episode_success_time", "sim_success_final",
     "luna6_time_calibration_json",
@@ -499,6 +502,7 @@ def build_btaudit2_visualization_dataset(
     base_builder = nqcu.EpisodeWorkbookRowBuilder(max_nodes=4)
     episode_records: list[dict[str, object]] = []
     observation_frames: list[pd.DataFrame] = []
+    contract_cache = {}
 
     for episode_path in episode_paths:
         episode_path_key = str(episode_path)
@@ -563,6 +567,16 @@ def build_btaudit2_visualization_dataset(
         }
 
         record["luna6_time_calibration_json"] = "{}"
+        reference_nodes = ordered_nodes(json.loads((episode_path / "bt.json").read_text()))
+        required_positions = {
+            node["node_id"]: node["node_position"] for node in json.loads(record["required_nodes_json"])
+        }
+        reference_nodes = [
+            {**node, "node_position": required_positions[node["node_id"]]}
+            for node in reference_nodes if node["node_id"] in required_positions
+        ]
+        historical = original_contract(episode_path, contract_cache)
+        contracts = {}
         with pd.ExcelFile(workbook_path) as excel:
             for spec in ALL_MODEL_SPECS:
                 _initialize_model_fields(record, spec)
@@ -576,7 +590,16 @@ def build_btaudit2_visualization_dataset(
                     observation_metadata,
                 )
                 if observations.empty:
+                    contracts[spec.model_name] = {"node_count": None, "basis": "model_unavailable",
+                                                  "nodes": [], "bindings": {}}
                     continue
+                contract = reconcile_positions(
+                    reference_nodes, historical, observations.to_dict("records"), spec.model_name,
+                )
+                contracts[spec.model_name] = contract
+                observations["node_position"] = observations["node_id"].map(contract["bindings"])
+                observations["node_position_basis"] = contract["basis"]
+                observations["model_node_count"] = contract["node_count"]
                 if spec == LUNA6_SPEC:
                     observations, calibration = _calibrate_luna_video_times(observations, episode_path)
                     record["luna6_time_calibration_json"] = json.dumps(calibration)
@@ -589,6 +612,7 @@ def build_btaudit2_visualization_dataset(
                 )
                 record[f"{spec.prefix}_sheet_present"] = True
 
+        record["model_node_contracts_json"] = json.dumps(contracts)
         episode_records.append(record)
 
     episodes = pd.DataFrame(episode_records).sort_values(

@@ -71,6 +71,56 @@ def fixture():
 
 
 class PaperResultsTests(unittest.TestCase):
+    def test_ordinal_renaming_preserves_metrics_and_case_evidence(self):
+        episodes, nodes, obs = fixture()
+        obs["node_position"] = obs["canonical_node_id"].str.rsplit("_", n=1).str[-1].astype(int)
+        obs["canonical_node_id"] = "different_" + obs["node_position"].astype(str)
+        result = build_paper_results(episodes, nodes, obs)
+        row = result.tables["node_metrics"].set_index("model_key").loc["qwen38"]
+        self.assertEqual((row.n, row.tp, row.fp, row.fn), (6, 3, 2, 1))
+        self.assertTrue(representative_cases(result)["model_notes"].eq("evidence").all())
+        self.assertTrue(result.observations.canonical_node_id.str.startswith("different_").all())
+
+    def test_extra_reference_positions_are_not_false_incomplete_or_whole_mission(self):
+        episodes, nodes, obs = fixture()
+        obs["node_position"] = obs["canonical_node_id"].str.rsplit("_", n=1).str[-1].astype(int)
+        obs["model_node_count"] = obs["episode_dir"].map(episodes.set_index("episode_dir")["required_nodes"])
+        obs.loc[obs.episode_dir.eq("a"), "model_node_count"] = 2
+        obs = obs[~(obs.episode_dir.eq("a") & obs.node_position.gt(2))]
+        result = build_paper_results(episodes, nodes, obs)
+        row = result.tables["node_metrics"].set_index("model_key").loc["qwen38"]
+        self.assertEqual((row.n, row.tp, row.fp, row.fn), (4, 1, 2, 1))
+        self.assertEqual(row.not_comparable_reference_positions, 2)
+        mission = result.tables["mission_metrics"].iloc[0]
+        self.assertEqual((mission.n, mission.fp, mission.fn), (1, 1, 0))
+        extra = result.node_model.query("episode_dir == 'a' and node_position > 2")
+        self.assertFalse(extra.human_comparable.any())
+
+    def test_extra_model_suffix_is_not_a_completed_whole_mission(self):
+        episodes, nodes, obs = fixture()
+        obs["node_position"] = obs["canonical_node_id"].str.rsplit("_", n=1).str[-1].astype(int)
+        obs["model_node_count"] = obs["episode_dir"].map(episodes.set_index("episode_dir")["required_nodes"])
+        obs.loc[obs.episode_dir.eq("b"), "model_node_count"] = 3
+        result = build_paper_results(episodes, nodes, obs)
+        row = result.episode_model.query("episode_dir == 'b'").iloc[0]
+        self.assertFalse(row.model_complete)
+        self.assertFalse(row.human_comparable)
+        comparison = result.tables["node_position_reconciliation"].query("episode_dir == 'b'").iloc[0]
+        self.assertEqual(comparison.model_only_positions, 1)
+        self.assertEqual(comparison.shared_positions, 2)
+
+    def test_prompt_error_comparison_requires_common_count_compatible_cohort(self):
+        episodes, nodes, obs = fixture()
+        obs["node_position"] = obs["canonical_node_id"].str.rsplit("_", n=1).str[-1].astype(int)
+        obs["model_node_count"] = obs["episode_dir"].map(episodes.set_index("episode_dir")["required_nodes"])
+        left = obs.assign(model_name="qwen35_qwen3_prompt")
+        right = obs.assign(model_name="qwen35")
+        right.loc[right.episode_dir.eq("a"), "model_node_count"] = 3
+        right = right[~(right.episode_dir.eq("a") & right.node_position.eq(4))]
+        result = build_paper_results(episodes, nodes, pd.concat([left, right]))
+        errors = result.tables["prompt_error_tradeoff"]
+        self.assertEqual(errors.n.tolist(), [1, 1])
+
     def test_offline_analysis_imports_without_replay_runtime(self):
         subprocess.run(
             [sys.executable, "-c",
@@ -422,6 +472,9 @@ class PaperResultsTests(unittest.TestCase):
                 "complete",
             )
             embedded = json.loads(episodes.iloc[0]["luna6_observations_json"])[0]
+            self.assertEqual(embedded["node_position"], 1)
+            self.assertEqual(embedded["model_node_count"], 1)
+            self.assertEqual(embedded["node_position_basis"], "saved_BT_ID_binding")
             self.assertEqual(embedded["stored_video_time_m:ss"], "0:00")
             self.assertEqual(embedded["stored_video_time_s"], 0)
             self.assertEqual(embedded["timing_basis"], "frame_index_scaled_to_video_duration")

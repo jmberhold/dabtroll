@@ -2602,6 +2602,11 @@ def _add_molmo_episode_fields(
 ) -> None:
     episode_rows = episode_rows.sort_values(["video_time_s", "review_row"], kind="stable").copy()
     episode_rows["_canonical_node_id"] = episode_rows["node_id"].map(_canonical_action_node_id)
+    positional = "node_position" in episode_rows and "required_nodes_json" in record
+    positions = {
+        _canonical_action_node_id(node["node_id"]): node["node_position"]
+        for node in json.loads(record["required_nodes_json"])
+    } if positional else {}
 
     for slot in range(1, 5):
         node_prefix = f"node_{slot}"
@@ -2610,6 +2615,15 @@ def _add_molmo_episode_fields(
         node_rows = episode_rows[
             episode_rows["_canonical_node_id"].eq(node_key)
         ].copy() if node_key else episode_rows.iloc[0:0].copy()
+        if positional:
+            position = positions.get(node_key)
+            count = episode_rows["model_node_count"].iloc[0]
+            comparable = position is not None and pd.notna(count) and position <= count
+            record[f"{node_prefix}_{node_model_prefix}_position_comparable"] = bool(comparable)
+            node_rows = episode_rows[
+                episode_rows["node_position"].eq(position)
+                & ~episode_rows["source"].eq("btstatus_complete_milestone")
+            ].copy() if comparable else episode_rows.iloc[0:0].copy()
 
         node_status = node_rows["model_status_norm"] if not node_rows.empty else pd.Series(dtype=str)
         completed_rows = node_rows[node_status.eq("complete")]
@@ -2707,6 +2721,7 @@ def _add_molmo_episode_fields(
         column for column in (
             "source", "request_kind_or_event", "canonical_node_id",
             "stored_video_time_m:ss", "stored_video_time_s", "timing_basis",
+            "node_position", "node_position_basis", "model_node_count",
         )
         if column in episode_rows.columns
     ]
