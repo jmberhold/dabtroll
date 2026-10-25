@@ -373,6 +373,7 @@ def build_state_snapshot(
     frame_path: Optional[str] = None,
     state_keys: Optional[List[str]] = None,
     preferred_state_key: Optional[str] = None,
+    info_summary: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build standardized per-step state snapshot payload for JSONL logging."""
     states = flatten_all_states(obs, state_keys=state_keys)
@@ -387,7 +388,7 @@ def build_state_snapshot(
         state_key = ordered_keys[0]
         state_vec = states[state_key]
 
-    return {
+    snapshot: Dict[str, Any] = {
         "schema": "dabtroll.state_snapshot.v1",
         "step": int(step),
         "event": str(event),
@@ -397,6 +398,12 @@ def build_state_snapshot(
         "state_keys": ordered_keys,
         "state": states,
     }
+    if isinstance(info_summary, dict) and info_summary:
+        snapshot["info_summary"] = dict(info_summary)
+        for key in ["success", "task_progress", "q_score", "valid"]:
+            if key in info_summary:
+                snapshot[key] = info_summary.get(key)
+    return snapshot
 
 
 def find_primary_video_key(obs: Dict[str, Any]) -> str:

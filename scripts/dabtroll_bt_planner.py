@@ -14,7 +14,7 @@ from mission_engine import (
     run_qwen_generation,
     run_qwen_generation_with_image,
 )
-from prompts import bt_json_repair_text, bt_synthesis_text, status_eval_text
+from prompts import bt_json_repair_text, bt_synthesis_text, load_status_prompt
 
 
 def parse_json_from_text(text: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -265,10 +265,13 @@ def fallback_bt_json(mission_name: str) -> Dict[str, Any]:
     }
 
 
-def build_status_messages(frame_paths: List[str], node_type: str, node_desc: str, success_criteria: str) -> List[Dict[str, Any]]:
+def build_status_messages(
+    frame_paths: List[str], node_type: str, node_desc: str, success_criteria: str,
+    status_prompt: str = "standard",
+) -> List[Dict[str, Any]]:
     """Build image-sequence prompt payload for node status evaluation."""
     content = [{"type": "image", "image": str(p)} for p in frame_paths]
-    content.append({"type": "text", "text": status_eval_text(node_type, node_desc, success_criteria)})
+    content.append({"type": "text", "text": load_status_prompt(status_prompt)(node_type, node_desc, success_criteria)})
     return [{"role": "user", "content": content}]
 
 
@@ -277,6 +280,7 @@ def evaluate_node_status_with_qwen(
     node: Dict[str, Any],
     frame_paths: List[str],
     max_new_tokens: int = 256,
+    status_prompt: str = "standard",
 ) -> Dict[str, Any]:
     """Evaluate node status from recent frames, returning a normalized status dict."""
     if not ctx or not ctx.enabled:
@@ -292,7 +296,7 @@ def evaluate_node_status_with_qwen(
     node_desc = info.get("description", node.get("description", ""))
     success_criteria = info.get("success_criteria", "")
 
-    messages = build_status_messages(frame_paths, node_type, node_desc, success_criteria)
+    messages = build_status_messages(frame_paths, node_type, node_desc, success_criteria, status_prompt=status_prompt)
     raw = run_qwen_generation(ctx, messages, max_new_tokens=max_new_tokens)
     status = parse_json_from_text(raw)
 

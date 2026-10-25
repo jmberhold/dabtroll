@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Generate a balanced human-eval schedule workbook.
 
-The workbook is designed for 3 scenarios with 20 eval rows each (60 total).
+The workbook targets N scenarios with configurable eval rows per scenario.
 It samples episodes 2..21 only, balances picks across runs, and can preserve
 already-completed rows from an existing workbook at the top.
 """
@@ -166,9 +166,9 @@ def _parse_args() -> argparse.Namespace:
         "--scenarios",
         nargs="*",
         default=[],
-        help="Exactly 3 scenario ids to include. If omitted, auto-detect top 3 by available runs.",
+        help="Scenario ids to include. If omitted, auto-detect top 3 by available runs.",
     )
-    ap.add_argument("--evals-per-scenario", type=int, default=20, help="Rows per scenario")
+    ap.add_argument("--evals-per-scenario", type=int, default=30, help="Rows per scenario")
     ap.add_argument(
         "--runs-per-scenario",
         type=int,
@@ -260,8 +260,8 @@ def _choose_scenarios(
     requested: Sequence[str],
 ) -> List[str]:
     if requested:
-        if len(requested) != 3:
-            raise ValueError("You must pass exactly 3 scenario ids with --scenarios.")
+        if len(requested) < 1:
+            raise ValueError("Pass at least one scenario id with --scenarios.")
         missing = [s for s in requested if s not in grouped]
         if missing:
             raise ValueError(f"Requested scenario(s) missing in summaries: {missing}")
@@ -616,7 +616,7 @@ def _write_workbook(
 
     ws.merge_cells("A2:L3")
     ws["A2"] = (
-        f"3 scenarios x {per_scenario_target} evals each ({len(rows)} total). "
+        f"{len(selected_scenarios)} scenarios x {per_scenario_target} evals each ({len(rows)} total). "
         f"Episodes are sampled from indices 2..21 only. Seed={seed}."
     )
     ws["A2"].alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)

@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: >-
+  Please cite VIBTARVE using this software metadata and the exact repository
+  commit. The supplied manuscript has the same title and author list; no
+  manuscript DOI, publication venue, or publication date is asserted here.
+type: software
+title: "VLM-Initiated Behavior Tree Auditing of Robot VLA Execution (VIBTARVE)"
+authors:
+  - family-names: Berhold
+    given-names: J. Mark
+    affiliation: "Department of Operational Sciences, Air Force Institute of Technology"
+    email: jedediah.berhold@afit.edu
+  - family-names: Cox
+    given-names: Bruce A.
+    affiliation: "Department of Operational Sciences, Air Force Institute of Technology"
+  - family-names: Ranly
+    given-names: Neil C.
+    affiliation: "Department of Operational Sciences, Air Force Institute of Technology"
+  - family-names: Yielding
+    given-names: Nicholas J.
+    affiliation: "Department of Electrical and Computer Engineering, Air Force Institute of Technology"
+repository-code: "https://github.com/jmberhold/dabtroll"
+url: "https://github.com/jmberhold/dabtroll"

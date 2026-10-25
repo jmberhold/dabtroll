@@ -253,6 +253,7 @@ def main() -> None:
     ap.add_argument("--mission-timeout-ms", type=int, default=120000)
     ap.add_argument("--bt-timeout-ms", type=int, default=240000)
     ap.add_argument("--bt-max-new-tokens", type=int, default=1024)
+    ap.add_argument("--status-prompt", default="standard", help="Named status prompt, versioned template ID, or .txt path.")
     ap.add_argument(
         "--frame-every-n-steps",
         type=int,
@@ -325,10 +326,6 @@ def main() -> None:
     normalized_test = str(args.test or "").strip().lower()
     btaudit_enabled = (normalized_test in {"btaudit", "btaudit2"}) and (args.mode == "dabtroll")
     btaudit2_enabled = (normalized_test == "btaudit2") and (args.mode == "dabtroll")
-    status_window_frames = int(args.status_window_frames)
-    if btaudit_enabled and status_window_frames <= 0:
-        status_window_frames = 8
-
     base_cfg = PipelineConfig(
         env_name=args.env_name,
         user_task=args.task,
@@ -340,12 +337,13 @@ def main() -> None:
         mission_host=args.mission_host,
         mission_port=args.mission_port,
         mission_timeout_ms=args.mission_timeout_ms,
+        status_prompt=args.status_prompt,
         bt_timeout_ms=args.bt_timeout_ms,
         bt_max_new_tokens=args.bt_max_new_tokens,
         frame_every_n_steps=args.frame_every_n_steps,
         status_eval_seconds=args.status_eval_seconds,
         control_freq_hz=args.control_freq_hz,
-        status_window_frames=status_window_frames,
+        status_window_frames=int(args.status_window_frames),
         status_window_seconds=args.status_window_seconds,
         policy_refocus_on_failed_status=not args.disable_policy_refocus,
         policy_refocus_fail_streak=args.policy_refocus_fail_streak,

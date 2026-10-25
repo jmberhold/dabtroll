@@ -1,0 +1,59 @@
+Assess ONLY the specified current behavior tree node using the chronological sequence of frames and its success criteria.
+
+Determine whether the required outcome is demonstrated, remains unmet or unverified, or has irrecoverably failed.
+
+Judge this node against its stated success criteria without adding requirements belonging to a later node. For action nodes, a later normal action such as releasing an object does not invalidate an earlier clearly demonstrated completion, unless the criteria explicitly require that state to persist.
+
+A previous node's completion claim or an apparent later stage of the task is not proof that this node succeeded. Ground this node's assessment in the observed target object and its relationship to the hand, supporting surface, or destination.
+
+Return ONLY valid JSON with these exact keys:
+{
+  "status": "running|complete|failure",
+  "notes": "short explanation identifying decisive visual evidence",
+  "progress_score": 0.5,
+  "criteria_met": [],
+  "criteria_missing": []
+}
+
+STATUS RULES
+
+Choose exactly one status:
+
+- complete: The required success outcome is established by a clear visible state or consistent temporal evidence. Brief occlusion does not prevent completion when the surrounding observations establish the required outcome. Occlusion, disappearance, or expected motion alone does not establish completion. Once the required outcome has been clearly demonstrated, do not demand another confirmation merely because a later view is obscured.
+
+- running: The required outcome remains unmet, or the available evidence cannot distinguish completion from partial execution. Do not return running solely because fingers or the target are temporarily hidden when the visible sequence otherwise establishes completion.
+
+- failure: Clear evidence establishes an unrecoverable failure or a precondition violation explicitly defined as terminal. Lack of visible completion alone is not failure. An empty hand after release or an object becoming hidden inside its destination is not by itself failure.
+
+ACTION EXAMPLES
+
+- Grasp and lift: Establish control of the target through a clear grip or carried motion demonstrating attachment to the hand. Contact, proximity, visual overlap, or motion consistent with pushing or sliding does not establish a grasp. When lifting is required, confirm the target moves clear of its supporting surface. Visible fingers are not required when the motion establishes attachment and lift. Do not add a lifting requirement to a grasp-only criterion.
+
+- Transport: Confirm the target object itself reaches the position or region specified by this node's success criteria. Hand movement or arrival without evidence that the target was transported is insufficient. Do not additionally require placement, release, or closure unless those are explicitly part of this node's criteria.
+
+- Place and release: Confirm the target is inside/on the correct destination. If release is required, it can be established by visible separation, independent resting at the destination, or a sequence showing the target entering the destination and the hand withdrawing without it. The target need not remain visible inside an opaque container when the sequence establishes placement. Disappearance without evidence of entry is insufficient.
+
+- Close: Confirm the required closed endpoint. Movement toward closure, a reduced opening, or an obscured opening alone does not establish that endpoint. Do not require a tighter closure than the success criteria specify.
+
+OUTPUT CONSISTENCY
+
+- criteria_met: Include supported criterion parts.
+- criteria_missing: Include every remaining mandatory part; distinguish "not achieved" from "not visible/unverified".
+- Do not list the same criterion in both arrays.
+- if complete criteria_missing should be empty.
+- notes should identify the observed target-object state that establishes completion or the decisive requirement that remains unmet/unverified. Reference frame numbers when available.
+- Evaluate this node only; do not infer completion of later nodes.
+
+HISTORY AND PROGRESS
+
+- progress_score is an auxiliary description of visible change, not completion probability or permission to advance.
+- Use 0.50 for no demonstrated change or insufficient comparison, above 0.50 for advancement, and below 0.50 for regression.
+- Use 0.00 for failure and 1.00 for completion.
+- Scores may increase or decrease with evidence. Do not force smooth or monotonic scores.
+- Decide status from the success criteria independently of progress_score.
+
+Prior progress estimates, oldest to newest: $progress_history
+Prior model claims of met criteria: $criteria_met_history
+Node type: $node_type
+Node description: $node_desc
+Success criteria: $success_criteria

@@ -1,6 +1,15 @@
-# Data Management and Knowledge Base
+# VIBTARVE data management and legacy knowledge base
 
-This guide describes how DABTROLL stores simulation artifacts and semantic index records for future RAG, analysis, and training workflows.
+This guide describes how the legacy DABTROLL runtime stores the recording
+artifacts and semantic index records used by VIBTARVE. The research effort is
+[VLM-Initiated Behavior Tree Auditing of Robot VLA Execution (VIBTARVE)](vibtarve.md);
+indexing/RAG utilities are supporting infrastructure, not the measurement
+contribution or execution authority.
+
+For the btaudit2 artifact dictionary, cohort manifests, annotation semantics and
+non-destructive cleanup policy, use the [dataset guide](btaudit2_dataset.md).
+The semantic index described here is a derived retrieval aid, not the canonical
+dataset or an annotation-completion registry.
 
 ## Scope
 

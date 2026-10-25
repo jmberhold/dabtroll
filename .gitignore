@@ -12,4 +12,7 @@ notebooks/*
 !notebooks/VIBTARVE_Visualization.ipynb
 !notebooks/VIBTARVE_Progress.ipynb
 !notebooks/VIBTRAVE_Visualizations.ipynb
+!notebooks/btaudit2_research_tutorial.ipynb
 **/.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/

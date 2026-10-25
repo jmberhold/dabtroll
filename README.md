@@ -1,6 +1,74 @@
-# DABTROLL Runtime README
+# VIBTARVE
 
-This README documents the scripts currently applicable to running DABTROLL simulation from `scripts/simulation.py`, including minimum required arguments, parameter bounds, and semantic indexing/query workflow.
+**VLM-Initiated Behavior Tree Auditing of Robot VLA Execution (VIBTARVE)**
+is a read-only research framework for evaluating interchangeable VLM auditors
+of VLA execution. Episode-specific behavior trees (BTs) define observable
+subgoals and success criteria; common-evidence replay holds the recorded
+trajectory, BT, simulator outcome and visual evidence fixed across auditors.
+It contributes a controlled measurement protocol, not a new VLA policy or an
+independent execution authority.
+
+**Authors:** J. Mark Berhold, Bruce A. Cox, Neil C. Ranly, and Nicholas J.
+Yielding, Air Force Institute of Technology. See the
+[VIBTARVE research overview](docs/vibtarve.md) for affiliations, paper context
+and manuscript-reported findings, and [CITATION.cff](CITATION.cff) for software
+citation metadata.
+
+The implementation began as DABTROLL. The GitHub repository name, local
+directory, `--mode dabtroll`, module names and historical artifact paths are
+retained for compatibility; **VIBTARVE is the research name**. Recordings,
+model weights and local environments are **not bundled with Git**.
+
+## Start here
+
+- [VIBTARVE overview](docs/vibtarve.md): research scope, paper title/authors,
+  common-evidence protocol and limitations.
+- [Getting started](docs/getting_started.md): CPU analysis/tests, environments,
+  data prerequisites, model replay, and new simulations.
+- [BTAudit2 dataset guide](docs/btaudit2_dataset.md): artifact schema, notation,
+  frozen cohorts, provenance audits, and human-review contributions.
+- [Public VIBTARVE dataset](https://huggingface.co/datasets/jmberhold/VIBTARVE):
+  recordings, human-review tables, auditor observations, summary CSVs, and
+  media under CC BY 4.0. No login or access request is required.
+- [Research tutorial](notebooks/btaudit2_research_tutorial.ipynb): read-only
+  structure/provenance inspection and episode-1 comparison charts.
+- Paper results, in methodology order:
+  [corpus and Stage 1](notebooks/VIBTRAVE_Visualizations.ipynb),
+  [Stage 2 auditor sensitivity](notebooks/VIBTARVE_Visualization.ipynb), and
+  [Stages 3A--3E BT auditing](notebooks/VIBTARVE_Progress.ipynb).
+  Each runs independently and exports CSV/LaTeX tables and PDF/PNG figures,
+  including selected Qwen3.8 v4 and Luna v5. All three read the canonical
+  evaluation datasheet; prompt-development revisions are not performance models.
+  Open the local [paper bundle](data/derived/vibtarve_paper/index.html) for
+  short-labeled figures, titled tables (including five captioned LaTeX tables),
+  and the full source CSV copy. Rebuild all exports without opening notebooks:
+  `python -m scripts.paper_bundle`. Vector PDFs use a 7.2-inch manuscript width
+  with at least 9.5 pt text; PNG previews are 300 dpi. Generated data stays local.
+- [Contributing](CONTRIBUTING.md): code/testing, notebook policy, and data safety.
+- [Citations and licensing](docs/research_attribution.md): upstream
+  attribution and publication/distribution requirements.
+
+The 2026-10-21 snapshot has 488 recordings: 24 episode-1 prompt-tuning recordings
+and 464 episode-2--21 recordings. Selected Qwen3.8 prompt v4 has verified model
+coverage on all 464 evaluation recordings (3,690 clean responses). Coverage is
+not an accuracy claim or proof of complete human review. Selected Luna v5 also
+covers all 464 evaluation recordings (9,469 clean responses) and is integrated
+as **Luna 6** in the same CSV-driven paper workflow. Its ten separate input
+frames differ from the historical Qwen3.8 eight-frame contact sheets.
+See the dataset guide
+for denominators, mixed-budget baseline caveats, and reproducibility limits.
+
+**Dataset license:** the public VIBTARVE dataset is released under **CC BY 4.0**.
+**Software licensing remains unresolved:** no license has been selected for this
+implementation repository. Dataset terms do not relicense the code, model
+weights, or upstream simulator assets as standalone resources.
+
+## Legacy DABTROLL runtime reference
+
+The following reference documents the legacy simulation/replay infrastructure
+used to create and audit recordings, including required arguments, bounds and
+semantic indexing. Live control/refocus features are not part of VIBTARVE's
+read-only common-evidence measurement protocol.
 
 CLI stands for Command-Line Interface. In this README, CLI flags are the options passed directly to Python scripts in a terminal.
 
@@ -8,9 +76,11 @@ References:
 - RoboCasa GR1 tabletop tasks: https://github.com/robocasa/robocasa-gr1-tabletop-tasks
 - GR00T (task engine): https://github.com/NVIDIA/Isaac-GR00T
 
-## 0. Current Contributor Focus: Contribution 1
+## 0. VIBTARVE auditing workflow
 
-Contribution 1 in this repository is the btaudit evaluation workflow plus robust Qwen3.5 replay validation.
+The research uses the btaudit/btaudit2 evaluation workflow and multi-model
+replay validation, including versioned Qwen3.8 prompt experiments. The older
+Qwen3.5 paths below remain supported reference workflows.
 
 Primary goals:
 - run `--test btaudit` simulation episodes to generate artifacts/workbooks;
@@ -27,15 +97,15 @@ Core scripts for Contribution 1:
 - `scripts/audit_qwen35_sheet3_quality.py` (robust keep/rerun audit)
 - `docs/replay_qwen35_eval_readme.md` (detailed replay and quality workflow)
 
-## 1. Canonical Run Command (DABTROLL)
+## 1. Recording generation command (legacy DABTROLL runtime)
 
 ```bash
 python scripts/simulation.py \
   --mode dabtroll \
   --env-name gr1_unified/PosttrainPnPNovelFromPlacematToPlateSplitA_GR1ArmsAndWaistFourierHands_Env \
   --n-episodes 10 \
-  --project-root /home/mark/dabtroll \
-  --isaac-gr00t-root /home/mark/dev/Isaac-GR00T
+  --project-root "$PWD" \
+  --isaac-gr00t-root "$ISAAC_GROOT_ROOT"
 ```
 
 ## 2. Minimum Required Inputs
@@ -69,15 +139,68 @@ uv run python gr00t/eval/run_gr00t_server.py \
 Mission engine server:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python dabtroll/scripts/mission_engine_server1.py \
+CUDA_VISIBLE_DEVICES=1 python scripts/mission_engine_server1.py \
   --host 127.0.0.1 --port 5560 --model "Qwen/Qwen3-VL-8B-Instruct"
 ```
 
 Mission engine details and options are documented in [docs/mission_engine_server.md](docs/mission_engine_server.md).
 
+For **remote Luna** inference (no local model or GPU), activate the demo's
+`luna` environment and run:
+
+```bash
+conda activate luna
+python scripts/mission_engine_server1.py --model luna --host 127.0.0.1 --port 5560
+```
+
+This reuses `OPENAI_API_KEY` or the notebook's
+`~/.config/dabtroll/openai_api_key` file. Startup/health send no provider
+requests by default; generation sends prompts/images to the provider and may
+incur charges. See the [cloud-model setup guide](docs/mission_engine_server.md#remote-luna-and-other-cloud-models)
+for dependencies, credentials, a paid smoke test, usage reporting, and the
+generic `--model cloud` adapter for compatible Responses/Chat Completions APIs.
+Existing simulation/replay clients still connect to ZMQ port 5560.
+
+For the local **Qwen3.8-27B-W4A16-AutoRound-GPTQ** checkpoint
+[published by Vishva007](https://huggingface.co/Vishva007/Qwen3.8-27B-W4A16-AutoRound-GPTQ),
+use the [`qwen38` installation and startup guide](docs/mission_engine_server.md#qwen38-27b-w4a16-autoround-gptq-startup-vllm-cuda1).
+It covers the fresh Python 3.12 conda environment, corrected vLLM 0.32.0 /
+Torch / TorchCodec CUDA 12.9 package set, checkpoint download, optional notebook
+kernel, and end-to-end health checks.
+Start the mission server on GPU 1 with one command; it launches and owns vLLM:
+
+```bash
+conda activate qwen38
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 \
+env -u LD_LIBRARY_PATH \
+python scripts/mission_engine_server1.py \
+  --model qwen38 \
+  --host 127.0.0.1 --port 5560 \
+  --device cuda \
+  --max_new_tokens 1024 --bt_max_new_tokens 1024
+```
+
+The server waits for vLLM readiness before binding ZMQ and stops its owned
+backend on Ctrl-C or SIGTERM. vLLM uses child/worker processes internally, but
+no second terminal or manually managed service is required. Stop any old
+mission/vLLM service first to free GPU 1 and ports 5560/8000. To intentionally
+reuse an existing endpoint instead, pass `--vllm_external`.
+
+Simulation still connects to ZMQ port **5560**, not HTTP port 8000. Multi-frame
+Qwen3.8 status requests use one labeled chronological contact sheet to retain
+the tested vLLM one-image limit; this differs from separate-frame evaluation.
+Existing Transformers model startup commands are unchanged.
+
 Data management and semantic indexing details are documented in [docs/knowledge_base.md](docs/knowledge_base.md).
 
 For Contribution 1 strict replay details, see [docs/replay_qwen35_eval_readme.md](docs/replay_qwen35_eval_readme.md).
+
+For model-specific prompt tuning without renaming Python functions, see the
+[status-prompt experiment guide](docs/status_prompt_experiments.md). Use
+`--status-prompt qwen38_v1` in live simulation, or
+`STATUS_PROMPT=qwen38_v1 bash scripts/run_replay_btaudit2_qwen38_episode1.sh`
+for the Qwen3.8 episode-1 baseline. Each revision keeps its own source snapshot,
+hash, replay artifacts, and review sheet; review v1 before creating v2-v5.
 
 ## 3. Runtime Execution Path
 
@@ -361,15 +484,18 @@ Status output fields:
 
 ## 11. Updating This Repository (Contributor Checklist)
 
-Use this flow when publishing Contribution 1 updates to GitHub:
+Use this flow when publishing VIBTARVE updates to GitHub:
 
 1. Verify mission/replay outputs and docs are current.
-2. Add new scripts and notebook assets.
-3. Commit with a message that references btaudit + qwen3.5 replay quality work.
+2. Stage only reviewed source, documentation and curated notebook assets.
+3. Commit with a message describing the research/workflow change and validation.
 4. Push to your branch and open/update the PR.
 
-Suggested staging command for current work:
+Follow [the notebook and data policy](CONTRIBUTING.md) before staging.
+Inspect the actual changed paths rather than adding personal notebooks or
+dataset artifacts:
 
 ```bash
-git add README.md docs/*.md scripts/*.py scripts/*.sh notebooks/DABTROLL_Audit_Visualization_Planning_Notebook.ipynb notebooks/VIBTARVE_Visualization.ipynb notebooks/VIBTARVE_Progress.ipynb
+git status --short
+git diff --check
 ```

@@ -1,0 +1,48 @@
+Evaluate ONLY the current behavior tree node from the chronological frames and its stated success criteria.
+
+For an action node, decide whether its required outcome occurred at any point in these frames. Do not require a later action to be completed. A later normal release does not undo an earlier completed grasp unless the criteria explicitly require the grasp to persist.
+
+GRASP COMPLETION
+
+A grasp is visually established by EITHER:
+- A visible state showing the target held by the gripper; OR
+- Consistent motion showing the target remains coupled to the gripper as the gripper moves.
+
+Either route is sufficient evidence of a grasp. Do not require both. Visible fingers or a visible contact point are not required when the motion establishes attachment.
+
+If this node also requires lifting, confirm that the held target moves clear of its supporting surface. Do not require lifting for a grasp-only node. Do not require transport, placement, release, or closure unless this node's criteria include them.
+
+Contact or proximity alone does not establish a grasp. Occlusion or disappearance alone does not establish completion. Once the required outcome is established, a later obscured view does not require another confirmation.
+
+OTHER ACTIONS
+
+- Transport: Confirm the target reaches the position or region specified by this node.
+- Place and release: Confirm the target is inside/on the destination.
+- Close: Confirm the item appears in the closed configuration.
+
+STATUS
+
+- complete: The stated success criteria are satisfied by a visible state or consistent temporal evidence, including the grasp evidence described above when applicable.
+- running: The required outcome has not occurred, or the frames do not establish that it occurred. Do not choose running merely because fingers or the target are briefly hidden when the visible sequence establishes the outcome.
+- failure: Visible evidence establishes an unrecoverable failure or an explicitly terminal precondition violation. An unmet or unverified outcome alone is not failure.
+
+OUTPUT
+
+Return ONLY valid JSON with these exact keys:
+{
+  "status": "running|complete|failure",
+  "notes": "short explanation identifying decisive visual evidence",
+  "progress_score": 0.5,
+  "criteria_met": [],
+  "criteria_missing": []
+}
+
+Include supported criterion parts in criteria_met and remaining mandatory parts in criteria_missing. Distinguish unmet from unverified criteria. Do not put the same criterion in both arrays. For complete, criteria_missing must be empty. In notes, identify the evidence establishing completion or the requirement still unmet/unverified; reference frame numbers when available.
+
+Set progress_score to 1.00 for complete and 0.00 for failure. Otherwise, use 0.50 for no demonstrated change or insufficient comparison, above 0.50 for advancement, and below 0.50 for regression. Scores may rise or fall with evidence. Decide status from the success criteria, independently of progress_score.
+
+Prior progress estimates, oldest to newest: $progress_history
+Prior model claims of met criteria: $criteria_met_history
+Node type: $node_type
+Node description: $node_desc
+Success criteria: $success_criteria
