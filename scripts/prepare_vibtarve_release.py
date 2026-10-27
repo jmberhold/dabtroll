@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -350,6 +351,24 @@ def stage_episode_access(source: Path, output: Path) -> dict:
             for cohort in COHORTS
         ).reset_index(drop=True)
 
+    def review_hyperlink(value, name):
+        parsed = urlsplit(value)
+        if parsed.scheme in {"http", "https"} or value.startswith("#"):
+            return value
+        if parsed.scheme or parsed.netloc:
+            raise ValueError(f"Unsupported review hyperlink: {value}")
+        local = Path(parsed.path)
+        target = (source / local if local.parts[:1] == ("episodes",)
+                  else source / "episodes" / name / local).resolve()
+        if not target.is_relative_to(source):
+            raise ValueError(f"Review hyperlink escapes the release: {value}")
+        if target.name == "bt.svg" and not target.is_file():
+            target = target.with_name("bt.json")
+        if not target.is_file():
+            raise ValueError(f"Review hyperlink has no published target: {value}")
+        relative = Path(os.path.relpath(target, source / "episodes" / name)).as_posix()
+        return relative + (f"#{parsed.fragment}" if parsed.fragment else "")
+
     episodes, annotations, rows, frames = (
         table(name) for name in ("episodes", "human_annotations", "workbook_rows", "frames")
     )
@@ -430,7 +449,7 @@ def stage_episode_access(source: Path, output: Path) -> dict:
                 if isinstance(cell["value"], str):
                     copied.data_type = "s"
                 if cell.get("hyperlink"):
-                    copied.hyperlink = cell["hyperlink"]
+                    copied.hyperlink = review_hyperlink(cell["hyperlink"], name)
         workbook.save(target / "human_review.xlsx")
         workbook.close()
         reviewed = annotations[annotations.episode_dir.eq(name)].copy()
@@ -472,7 +491,9 @@ def stage_episode_access(source: Path, output: Path) -> dict:
             "- [Frame index and original pixel SHA256 hashes](frame_index.csv)\n"
             f"- {video_link}\n\n"
             "The XLSX is a reconstructed, sanitized Sheet1-only copy: saved values, "
-            "cell coordinates and hyperlinks are retained; formulas are inert text. "
+            "cell coordinates and external hyperlinks are retained; local evidence links "
+            "are rebased to published assets (omitted bt.svg links open bt.json instead). "
+            "Formulas are inert text. "
             "Original workbook properties, styling and other sheets are not included. "
             "The CSV includes node rows with review confirmation and source provenance. "
             "Extract frames.zip here to create frames/<camera>/frame_<step>.jpg; "
@@ -518,6 +539,7 @@ def stage_episode_access(source: Path, output: Path) -> dict:
         "episode_count": len(records), "frame_count": int(sum(counts.values())),
         "sheet1_node_rows": len(annotations),
         "completed_reviews": catalog[catalog.human_reviewed].groupby("cohort").size().to_dict(),
+        "review_hyperlinks": "Local targets rebased relative to workbook; omitted bt.svg diagrams link to published bt.json instead",
         "transform": "Reconstructed sanitized Sheet1 XLSX/CSV and per-episode ZIPs from existing released tables and verified frame shards; original pixel bytes unchanged",
     }
 
