@@ -122,7 +122,8 @@ def _wrap(value: str, width: int) -> str:
     return "\n".join(textwrap.fill(line, width=width, break_long_words=False) for line in value.splitlines())
 
 
-def prepare_figure(figure: plt.Figure, name: str, title: str, layout: str = "stacked") -> None:
+def prepare_figure(figure: plt.Figure, name: str, title: str, layout: str = "stacked",
+                   compact_header: bool = False) -> None:
     """Use physical manuscript width and a font floor, rather than oversized art scaled down."""
     if layout not in {"stacked", "side_by_side"}:
         raise ValueError(f"Unknown figure layout: {layout}")
@@ -211,8 +212,8 @@ def prepare_figure(figure: plt.Figure, name: str, title: str, layout: str = "sta
                 axis.xaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
                 axis.tick_params(axis="y", labelleft=index == 0)
                 labels = [text.get_text() for text in axis.get_yticklabels()]
-                if labels and all(label.startswith("Qwen3.8 v") for label in labels):
-                    axis.set_yticks(axis.get_yticks(), [label.replace("Qwen3.8 ", "") for label in labels])
+                if labels and all(label.startswith(("Qwen3.8 v", "Luna 6 v")) for label in labels):
+                    axis.set_yticks(axis.get_yticks(), [label.rsplit(" ", 1)[-1] for label in labels])
                 maximum = max((float(text.get_text()[2:]) for text in axis.texts if text.get_text().startswith("n=")), default=0)
                 axis.set_xlim(0, max(1, maximum) * 1.4)
     if name == "prompt":
@@ -245,6 +246,19 @@ def prepare_figure(figure: plt.Figure, name: str, title: str, layout: str = "sta
     figure.tight_layout(rect=(0.015, bottom, 0.985, 0.91 if horizontal else 0.94),
                         pad=1.2, h_pad=2.0, w_pad=2.0)
     figure.canvas.draw()
+    if compact_header:
+        renderer = figure.canvas.get_renderer()
+        top = max(axis.title.get_window_extent(renderer).y1 for axis in axes) / figure.dpi
+        heading_height = heading.get_window_extent(renderer).height / figure.dpi
+        old_height = figure.get_figheight()
+        height = top + heading_height + 0.18 * scale
+        positions = [axis.get_position().frozen() for axis in axes]
+        figure.set_size_inches(figure.get_figwidth(), height)
+        for axis, position in zip(axes, positions):
+            axis.set_position((position.x0, position.y0 * old_height / height,
+                               position.width, position.height * old_height / height))
+        heading.set_y(1 - 0.08 * scale / height)
+        figure.canvas.draw()
     if name == "case":
         paper.layout_case_frames(figure)
     if horizontal and name == "sequential":
@@ -272,11 +286,13 @@ def _tex_escape(value: object) -> str:
 
 
 def _write_table(output: Path, stage: str, label: str, title: str, description: str,
-                 frame: pd.DataFrame, compact: bool = False) -> dict:
+                 frame: pd.DataFrame, compact: bool = False,
+                 display_columns: dict[str, str] | None = None) -> dict:
     directory = output / "tables"
     directory.mkdir(parents=True, exist_ok=True)
     frame.to_csv(directory / f"{label}.csv", index=False)
-    table = frame.to_html(index=False, escape=True, border=0, na_rep="N/A", float_format=lambda v: f"{v:.3f}")
+    displayed = frame.rename(columns=display_columns or {})
+    table = displayed.to_html(index=False, escape=True, border=0, na_rep="N/A", float_format=lambda v: f"{v:.3f}")
     (directory / f"{label}.html").write_text(
         f"<!doctype html><html lang='en'><meta charset='utf-8'><title>{escape(title)}</title>"
         f"<style>{CSS}</style><h1>{escape(title)}</h1><p>{escape(description)}</p>"
@@ -286,13 +302,13 @@ def _write_table(output: Path, stage: str, label: str, title: str, description: 
     )
     files = {suffix: f"tables/{label}.{suffix}" for suffix in ("csv", "html")}
     if compact:
-        latex = frame.apply(lambda column: column.map(lambda value: _tex_escape(value) if pd.notna(value) else "N/A"))
+        latex = displayed.apply(lambda column: column.map(lambda value: _tex_escape(value) if pd.notna(value) else "N/A"))
         latex.columns = [
             r"\shortstack{" + r"\\".join(_tex_escape(column).split(" ")) + "}"
-            if " " in column else _tex_escape(column) for column in frame.columns
+            if " " in column else _tex_escape(column) for column in displayed.columns
         ]
-        columns = "".join("l" if column in {"Scenario", "Auditor", "Configuration", "Model name"} else "r"
-                          for column in frame.columns)
+        columns = "".join("l" if column in {"Scenario", "Auditor", "Configuration", "Model name", "Prompt revision"} else "r"
+                          for column in displayed.columns)
         tabular = latex.to_latex(index=False, escape=False, column_format=columns)
         (directory / f"{label}.tex").write_text(
             "\\begin{table*}[t]\n\\centering\n\\small\n\\setlength{\\tabcolsep}{3pt}\n"
@@ -305,13 +321,13 @@ def _write_table(output: Path, stage: str, label: str, title: str, description: 
 
 
 def _write_figure(output: Path, stage: str, name: str, label: str, title: str,
-                  description: str, figure: plt.Figure) -> dict:
+                  description: str, figure: plt.Figure, compact_header: bool = False) -> dict:
     directory = output / "figures"
     directory.mkdir(parents=True, exist_ok=True)
     files = {}
     layouts = ("stacked", "side_by_side") if name in MULTIPANEL_NAMES else ("stacked",)
     for layout in layouts:
-        prepare_figure(figure, name, title, layout=layout)
+        prepare_figure(figure, name, title, layout=layout, compact_header=compact_header)
         bounds = figure.get_tightbbox(figure.canvas.get_renderer())
         if bounds.x0 < 0 or bounds.y0 < 0 or bounds.x1 > figure.get_figwidth() or bounds.y1 > figure.get_figheight():
             raise ValueError(f"{label} ({layout}): figure decorations extend outside the manuscript canvas")
@@ -354,7 +370,7 @@ def _write_index(output: Path, catalog: dict) -> None:
         f"<p><small>Generated {escape(catalog['generated_utc'])}. CSV SHA256: <code>{source['sha256']}</code></small></p>",
     ]
     if (output / "prompt_development/index.html").exists():
-        parts.append("<p><a href='prompt_development/index.html'>Separate Qwen3.8 v1--v5 prompt-development supplement</a> (not primary evaluation performance).</p>")
+        parts.append("<p><a href='prompt_development/index.html'>Separate Qwen3.8 and Luna 6 v1--v5 prompt-development supplement</a> (not primary evaluation performance).</p>")
     for stage, heading in STAGE_TITLES.items():
         parts.append(f"<h2>{stage}. {escape(heading)}</h2>")
         order = {"manuscript table": 0, "figure": 1, "supporting table": 2}
@@ -376,7 +392,7 @@ def _write_index(output: Path, catalog: dict) -> None:
         "- `figures/`: short-labeled vector PDFs and 300 dpi PNGs, 7.2 inches wide, minimum 9.5 pt text.\n"
         "- `*_side.pdf` / `*_side.png`: side-by-side alternatives for every two-/three-panel chart; "
         "14.4-inch masters with minimum 19 pt text (9.5 pt at a 7.2-inch print width).\n"
-        "- `prompt_development/`, when explicitly exported: separate Qwen3.8 v1--v5 episode-1 "
+        "- `prompt_development/`, when explicitly exported: separate Qwen3.8 and Luna 6 v1--v5 episode-1 "
         "development comparison and its own source datasheet; never pooled into primary performance.\n"
         "- `tables/t*.tex`: five compact, captioned manuscript tables. Include `\\usepackage{booktabs}`; "
         "use `\\input{tables/t02_mission.tex}` in LaTeX. `table*` spans both columns; no shrink-to-fit wrapper is used.\n"
@@ -512,52 +528,93 @@ def export_stage(results: paper.PaperResults, source_csv: Path | str, output_dir
 def export_prompt_development(
     episode_df: pd.DataFrame, output_dir: Path | str = DEFAULT_OUTPUT / "prompt_development",
 ) -> tuple[plt.Figure, dict[str, pd.DataFrame], Path]:
-    """Export all five development revisions without mixing them into evaluation."""
+    """Export both five-revision families; retain the Qwen figure/review return API."""
     if episode_df.empty or not episode_df["episode_dir"].str.contains("_episode_1_of_", regex=False).all():
         raise ValueError("Prompt-development chart requires episode-1 rows only")
-    review = paper.review.build_node_completion_review(
-        episode_df, include_reference_models=False, qwen38_versions=range(1, 6),
-        luna_versions=[],
-    )
-    expected = [f"Qwen3.8 v{version}" for version in range(1, 6)]
-    if review["counts"]["model"].drop_duplicates().tolist() != expected:
-        raise ValueError("All five Qwen3.8 development revisions (v1--v5) must have available observations")
+    reviews = {}
+    for family, label in (("qwen38", "Qwen3.8"), ("luna6", "Luna 6")):
+        for version in range(1, 6):
+            column = f"{family}_v{version}_observation_count"
+            if column not in episode_df or not pd.to_numeric(
+                episode_df[column], errors="raise",
+            ).gt(0).all():
+                raise ValueError(f"All five {label} development revisions (v1--v5) must cover every episode")
+        reviews[family] = paper.review.build_node_completion_review(
+            episode_df, include_reference_models=False,
+            qwen38_versions=range(1, 6) if family == "qwen38" else [],
+            luna_versions=range(1, 6) if family == "luna6" else [],
+        )
     output = Path(output_dir)
     (output / "data").mkdir(parents=True, exist_ok=True)
     episode_df.to_csv(output / "data/episodes.csv", index=False)
-    description = (
+    common = (
         "Episode-1 prompt development only, not held-out evaluation. Each revision's Node 2/3 cohort "
         "requires its preceding completion decisions; blank human times mean incomplete in this development review. "
-        "The v1 budget was 256 tokens for 22 episodes and 1024 for two successful retries. "
-        "V4 was selected for evaluation, where it is reported simply as Qwen3.8."
+        "Different revisions therefore have different later-node denominators. "
     )
+    descriptions = {
+        "qwen38": common + "Qwen3.8 v1 used 256 output tokens for 22 episodes and 1024 for two successful retries. "
+        "V4 was selected for evaluation. Historical Qwen3.8 uses eight-frame contact sheets.",
+        "luna6": common + "Luna 6 v5 was selected for evaluation. Luna uses ten separate images per full window; "
+        "these input conditions differ from Qwen3.8 and are not a controlled input-matched comparison. "
+        "These tables compare completion decisions, not source-clock timing accuracy.",
+    }
+    entries, sections = [], []
+    figures = {}
     with plt.rc_context(STYLE):
-        figure, _ = paper.review.plot_node_completion_review(review["counts"])
-        entry = _write_figure(output, "development", "sequential", "p01_qwen38",
-                              "Qwen3.8 prompt development: v1--v5", description, figure)
-        tables = [
-            _write_table(output, "development", f"p{index:02}_{name}", f"Prompt-development {name}",
-                         description, frame)
-            for index, (name, frame) in enumerate(review.items(), 2)
-        ]
+        for family, label in (("qwen38", "Qwen3.8"), ("luna6", "Luna 6")):
+            review, description = reviews[family], descriptions[family]
+            figure, _ = paper.review.plot_node_completion_review(review["counts"])
+            figures[family] = figure
+            entry = _write_figure(
+                output, "development", "sequential", "p01_qwen38" if family == "qwen38" else "p05_luna6",
+                f"{label} prompt development (v1-v5)", description, figure, compact_header=True,
+            )
+            table_titles = {
+                "detail": f"{label} development: episode-node decisions",
+                "counts": f"{label} development: sequential completion agreement",
+                "coverage": f"{label} development: eligibility and coverage",
+            }
+            tables = [
+                _write_table(
+                    output, "development",
+                    f"p{index:02}_{name}" if family == "qwen38" else f"p{index:02}_luna6_{name}",
+                    table_titles[name], description, frame, compact=name == "counts",
+                    display_columns={"model": "Prompt revision", "node_slot": "Node",
+                                     "eligible_count": "Eligible pairs"} if name == "counts" else None,
+                )
+                for index, (name, frame) in enumerate(review.items(), 2 if family == "qwen38" else 6)
+            ]
+            entries += [entry, *tables]
+            links = " | ".join(f"<a href='{path}'>{key.upper().replace('_', ' ')}</a>" for key, path in entry["files"].items())
+            table_links = " | ".join(f"<a href='{table['files']['html']}'>{table['title']}</a>" for table in tables)
+            sections.append(
+                f"<h2>{label} v1-v5</h2><p>{escape(description)}</p>"
+                f"<p>{links}</p><img src='{entry['files']['side_png']}' alt='{label}: five prompt revisions'>"
+                f"<p>{table_links}</p>"
+            )
+            if family == "luna6":
+                plt.close(figure)
     digest = hashlib.sha256((output / "data/episodes.csv").read_bytes()).hexdigest()
     catalog = {"scope": "prompt_development_only", "source": {"copy": "data/episodes.csv", "sha256": digest,
-               "episodes": len(episode_df)}, "description": description, "entries": [entry, *tables]}
+               "episodes": len(episode_df)}, "description": common, "families": descriptions,
+               "entries": entries}
     (output / "manifest.json").write_text(json.dumps(catalog, indent=2), encoding="utf-8")
-    links = " | ".join(f"<a href='{path}'>{key.upper().replace('_', ' ')}</a>" for key, path in entry["files"].items())
-    table_links = " | ".join(f"<a href='{table['files']['html']}'>{table['title']}</a>" for table in tables)
     index = output / "index.html"
     index.write_text(
-        f"<!doctype html><html lang='en'><meta charset='utf-8'><title>Qwen3.8 prompt development</title>"
-        f"<style>{CSS}</style><h1>Qwen3.8 v1--v5: prompt development</h1><p class='warning'>{escape(description)}</p>"
-        f"<p>{links}</p><img src='{entry['files']['side_png']}' alt='Five Qwen3.8 development revisions'>"
-        f"<p>{table_links} | <a href='data/episodes.csv'>Full development datasheet</a> | "
+        f"<!doctype html><html lang='en'><meta charset='utf-8'><title>Prompt development: Qwen3.8 and Luna 6</title>"
+        f"<style>{CSS}</style><h1>Prompt development: Qwen3.8 and Luna 6</h1><p class='warning'>{escape(common)}</p>"
+        "<p>Use vector PDFs at 7.2-inch journal width. Stacked masters have text at least 9.5 pt; "
+        "14.4-inch side-by-side masters have text at least 19 pt (9.5 pt at 7.2-inch print width). "
+        "Do not shrink to a single column. Exact counts and eligibility are retained in CSV, HTML and LaTeX tables.</p>"
+        + "".join(sections)
+        + "<p><a href='data/episodes.csv'>Full development datasheet</a> | "
         f"<a href='manifest.json'>Development provenance</a></p></html>", encoding="utf-8",
     )
     parent_manifest = output.parent / "manifest.json"
     if parent_manifest.exists():
         _write_index(output.parent, json.loads(parent_manifest.read_text()))
-    return figure, review, index
+    return figures["qwen38"], reviews["qwen38"], index
 
 
 def main() -> None:
