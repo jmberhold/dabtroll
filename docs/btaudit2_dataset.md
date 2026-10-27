@@ -318,6 +318,19 @@ scheduled progress row to be scored, respects the reviewed video duration,
 and uses only overlapping human/model seconds; it does not redefine binary
 completion.
 
+The separate `prompt_development/` bundle includes Qwen3.8 **and Luna 6 v1--v5**,
+each with its own sequential-completion figure, exact counts, episode-node
+decisions, coverage, and a captioned LaTeX count table. Both families must have
+all five revisions available for every episode-1 input row. Use
+`scripts.paper_bundle.export_prompt_development(episode_df)` with the existing
+episode-1 analysis CSV, or supply `--prompt-development-csv` to the bundle CLI.
+Later-node denominators depend on each revision's preceding completion decisions;
+these are development comparisons, never pooled with evaluation performance.
+Qwen3.8 v4 and Luna v5 were selected; their differing image conditions remain
+explicit. Figures use a 0.1-inch main-title/panel-title gap at 7.2-inch print
+width and at least 9.5 pt text at that width. The dataset card does not need
+paper-development descriptions.
+
 ## Local Hugging Face release candidate
 
 ### Episode-level human reviews and saved frames

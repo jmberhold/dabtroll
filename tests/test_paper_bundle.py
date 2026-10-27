@@ -215,7 +215,7 @@ class PaperBundleTests(unittest.TestCase):
             row = {}
             for version in range(1, 6):
                 row.update(episode(name, ["0:00", "", "0:02"], ["0:00", "0:01", ""], version))
-            row.update(episode(name, ["0:00", "", "0:02"], ["", "", ""], family="luna6"))
+                row.update(episode(name, ["0:00", "", "0:02"], ["", "", ""], version, family="luna6"))
             row["molmo_observation_count"] = 3
             rows.append(row)
         data = pd.DataFrame(rows)
@@ -230,15 +230,62 @@ class PaperBundleTests(unittest.TestCase):
             self.assertTrue(review["counts"][list(paper.review.COMPLETION_CATEGORIES)].sum(axis=1).eq(review["counts"].eligible_count).all())
             catalog = json.loads((output / "manifest.json").read_text())
             self.assertEqual(catalog["scope"], "prompt_development_only")
+            self.assertEqual(set(catalog["families"]), {"qwen38", "luna6"})
+            self.assertEqual(len(catalog["entries"]), 8)
+            self.assertIn("Luna 6 v1-v5", index.read_text())
+            luna = pd.read_csv(output / "tables/p07_luna6_counts.csv")
+            self.assertEqual(luna.model.drop_duplicates().tolist(), [f"Luna 6 v{i}" for i in range(1, 6)])
+            self.assertTrue(luna[list(paper.review.COMPLETION_CATEGORIES)].sum(axis=1).eq(luna.eligible_count).all())
+            self.assertTrue((output / "tables/p03_counts.tex").is_file())
+            self.assertTrue((output / "tables/p07_luna6_counts.tex").is_file())
+            self.assertIn("Prompt", (output / "tables/p07_luna6_counts.tex").read_text())
+            self.assertNotIn("eligible\\_count", (output / "tables/p07_luna6_counts.tex").read_text())
+            parser = Links()
+            parser.feed(index.read_text())
+            self.assertTrue(all((output / path).exists() for path in parser.paths))
             self.assertIn("not held-out evaluation", index.read_text())
             self.assertEqual(len(pd.read_csv(output / "data/episodes.csv")), 2)
             for path in catalog["entries"][0]["files"].values():
                 self.assertTrue((output / path).is_file())
             with self.assertRaisesRegex(ValueError, "All five"):
                 bundle.export_prompt_development(data.drop(columns="qwen38_v3_observation_count"), output)
+            with self.assertRaisesRegex(ValueError, "All five Luna 6"):
+                bundle.export_prompt_development(data.drop(columns="luna6_v5_observation_count"), output)
+            with self.assertRaisesRegex(ValueError, "every episode"):
+                bundle.export_prompt_development(data.assign(luna6_v4_observation_count=[3, 0]), output)
             with self.assertRaisesRegex(ValueError, "episode-1"):
                 bundle.export_prompt_development(data.assign(episode_dir="Task_episode_2_of_21_run"), output)
             plt.close(figure)
+
+    def test_development_header_gap_and_journal_fonts_for_both_families(self):
+        data = pd.DataFrame([{
+            **episode("Task_episode_1_of_21_run", ["0:00", "", ""], ["0:00", "", ""]),
+            **episode("Task_episode_1_of_21_run", ["0:00", "", ""], ["0:00", "", ""], family="luna6"),
+        }])
+        for family, label in (("qwen38", "Qwen3.8"), ("luna6", "Luna 6")):
+            review = paper.review.build_node_completion_review(
+                data, include_reference_models=False,
+                qwen38_versions=[1] if family == "qwen38" else [],
+                luna_versions=[1] if family == "luna6" else [],
+            )
+            for layout, scale in (("stacked", 1), ("side_by_side", 2)):
+                with self.subTest(family=family, layout=layout), plt.rc_context(bundle.STYLE):
+                    figure, _ = paper.review.plot_node_completion_review(review["counts"])
+                    bundle.prepare_figure(
+                        figure, "sequential", f"{label} prompt development: v1--v5",
+                        layout=layout, compact_header=True,
+                    )
+                    renderer = figure.canvas.get_renderer()
+                    heading = figure._suptitle.get_window_extent(renderer)
+                    panel_top = max(axis.title.get_window_extent(renderer).y1 for axis in figure.axes)
+                    gap_in = (heading.y0 - panel_top) / figure.dpi / scale
+                    self.assertGreaterEqual(gap_in, 0.09)
+                    self.assertLessEqual(gap_in, 0.11)
+                    self.assertTrue(all(text.get_fontsize() / scale >= 9.5 for text in figure.findobj(Text)))
+                    bounds = figure.get_tightbbox(renderer)
+                    self.assertGreaterEqual(bounds.y0, 0)
+                    self.assertLessEqual(bounds.y1, figure.get_figheight())
+                    plt.close(figure)
 
     def test_invalid_stage_fails_before_writing(self):
         with tempfile.TemporaryDirectory() as directory:
