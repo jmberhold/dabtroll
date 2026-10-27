@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 import pandas as pd
 from PIL import Image
 import pyarrow.parquet as pq
@@ -55,6 +55,10 @@ def fixture(root):
         sheet.title = "Sheet1_BT_Node_Review"
         sheet.append(["node_id", "reviewer_completion_time_m:ss", "reviewer_notes"])
         sheet.append(["grasp", None, "human note"])
+        sheet["C2"].hyperlink = "https://example.org/evidence"
+        sheet["C3"] = "=1+1"
+        workbook.properties.creator = "Private Reviewer"
+        workbook.properties.lastModifiedBy = "Private Reviewer"
         model = workbook.create_sheet("luna6_v2")
         model.append(["node_id", "model_status", "model_notes"])
         model.append(["grasp", "running", "historical model explanation"])
@@ -93,6 +97,35 @@ def fixture(root):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_episode_access_rejects_missing_reviews_unsafe_paths_and_corrupt_frames(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, candidate = Path(directory) / "btaudit2", Path(directory) / "candidate"
+            fixture(root)
+            with patch.object(release, "probe_video", return_value=2.0):
+                release.prepare_release(root, candidate, expected_count=2, rights_confirmed=True)
+            frame_path = candidate / "data/frames/evaluation.parquet"
+            frames = pd.read_parquet(frame_path)
+            for kind, message in (("path", "Unsafe"), ("hash", "checksum"), ("missing", "Sheet1")):
+                with self.subTest(kind=kind):
+                    if kind == "missing":
+                        path = candidate / "data/workbook_rows/evaluation.parquet"
+                        saved = path.read_bytes()
+                        rows = pd.read_parquet(path)
+                        rows[~rows.sheet.str.startswith("Sheet1")].to_parquet(path, index=False)
+                    else:
+                        path = frame_path
+                        saved = path.read_bytes()
+                        changed = frames.copy()
+                        changed.loc[0, "member_path" if kind == "path" else "sha256"] = (
+                            "../../escape.jpg" if kind == "path" else "0" * 64
+                        )
+                        changed.to_parquet(path, index=False)
+                    try:
+                        with self.assertRaisesRegex(ValueError, message):
+                            release.stage_episode_access(candidate, Path(directory) / kind)
+                    finally:
+                        path.write_bytes(saved)
+
     def test_paper_bundle_is_portable_complete_and_source_preserving(self):
         with tempfile.TemporaryDirectory() as directory:
             source, output = Path(directory) / "bundle", Path(directory) / "release"
@@ -160,10 +193,10 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(manifest["readable_videos"], 1)
             self.assertEqual(manifest["summary_csv_count"], 4)
             self.assertEqual(manifest["tables"]["human_annotations"]["rows"], 2)
-            self.assertEqual(manifest["tables"]["workbook_rows"]["rows"], 8)
+            self.assertEqual(manifest["tables"]["workbook_rows"]["rows"], 10)
             self.assertFalse(manifest["upload_performed"])
             self.assertTrue(all(release.sha256(p) == digest for p, digest in original.items()))
-            self.assertFalse(list(output.rglob("*.xlsx")))
+            self.assertEqual(len(list(output.rglob("human_review.xlsx"))), 2)
             tuning = pd.read_parquet(output / "data/nodes/prompt_development.parquet")
             evaluation = pd.read_parquet(output / "data/nodes/evaluation.parquet")
             self.assertEqual(tuning.human_complete.tolist(), [False])
@@ -186,6 +219,30 @@ class ReleaseTests(unittest.TestCase):
             raw = pd.read_parquet(output / "data/workbook_rows/evaluation.parquet")
             self.assertIn("historical model explanation", raw.cells_json.str.cat())
             self.assertEqual(release.validate_release(output)["verified_frame_members"], 16)
+            catalog = pd.read_csv(output / "episode_catalog.csv")
+            self.assertEqual(catalog.human_reviewed.tolist(), [False, True])
+            self.assertEqual(catalog.frame_count.tolist(), [8, 8])
+            self.assertEqual(manifest["episode_access"]["completed_reviews"], {"prompt_development": 1})
+            self.assertIn("Completed reviews (1)", (output / "EPISODES.md").read_text())
+            for episode in catalog.to_dict("records"):
+                book = load_workbook(output / episode["sheet1_xlsx"], data_only=False)
+                self.assertEqual(book.sheetnames, ["Sheet1_BT_Node_Review"])
+                self.assertEqual(book.active["C2"].value, "human note")
+                self.assertEqual(book.active["C2"].hyperlink.target, "https://example.org/evidence")
+                self.assertEqual(book.active["C3"].value, "=1+1")
+                self.assertEqual(book.active["C3"].data_type, "s")
+                self.assertEqual(book.properties.creator, "VIBTARVE")
+                book.close()
+                review = pd.read_csv(output / episode["sheet1_csv"])
+                self.assertTrue(review.confirmed_review.eq(episode["human_reviewed"]).all())
+                with zipfile.ZipFile(output / episode["frames_zip"]) as archive:
+                    self.assertIsNone(archive.testzip())
+                    self.assertEqual(len(archive.namelist()), 8)
+                    for item in pd.read_csv(output / episode["frame_index"]).to_dict("records"):
+                        self.assertEqual(hashlib.sha256(archive.read(item["zip_member_path"])).hexdigest(),
+                                         item["sha256"])
+            with self.assertRaises(FileExistsError):
+                release.stage_episode_access(output, output)
             for line in (output / "SHA256SUMS").read_text().splitlines():
                 digest, name = line.split("  ", 1)
                 self.assertEqual(release.sha256(output / name), digest)
