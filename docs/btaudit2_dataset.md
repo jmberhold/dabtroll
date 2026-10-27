@@ -320,6 +320,42 @@ completion.
 
 ## Local Hugging Face release candidate
 
+### Episode-level human reviews and saved frames
+
+Start with the public [episode catalog](https://huggingface.co/datasets/jmberhold/VIBTARVE/blob/main/EPISODES.md).
+Each episode folder exposes:
+
+- `human_review.xlsx`: reconstructed **Sheet1_BT_Node_Review only**, retaining
+  sanitized saved cell values, coordinates and hyperlinks, without original
+  workbook properties, styles or model sheets. Formulas remain inert text.
+- `sheet1_human_review.csv`: Sheet1 node rows, including confirmation flags,
+  completion times/frames, confidence, notes and source workbook hashes.
+- `frames.zip`: every saved image from both recorded camera views, with original
+  JPEG bytes under `frames/<camera>/frame_<step>.jpg`.
+- `frame_index.csv`: camera, step, ZIP member, original shard/member and SHA256.
+- An episode README linking these assets and the video, where readable.
+
+The root `episode_catalog.csv` and `EPISODES.md` separate **completed reviews**
+from unconfirmed templates. Completed human review is not successful task
+completion: blank node times in a confirmed review can mean incomplete, while
+blanks in unconfirmed templates are not ground-truth negatives. Review confirmation
+still uses the completed evaluation schedule or the separate episode-1 review
+confirmation, not nonempty notes, workbook existence or model judgments.
+
+These are convenience exports of the existing sanitized relational tables and
+verified frame shards, not new annotations. The original source XLSX stays local.
+The exporter stages these assets on future releases using `stage_episode_access`;
+public additions record their exact input table hashes and source revision.
+Before refreshing a published snapshot, compare saved workbook hashes and
+completed-review confirmations with the published source inventory; newly
+completed or changed reviews require a versioned annotation update, not relabeling
+an old template. Unsaved spreadsheet changes cannot be captured.
+
+For contributions, preserve episode/node identifiers and the starting dataset
+revision. Record proposed changes, evidence, and reviewer revision in a separate
+copy and follow the [contribution procedure](#adding-recordings-or-human-review); do not overwrite existing human
+judgments or publish private reviewer metadata.
+
 The dataset repository is
 [`jmberhold/VIBTARVE`](https://huggingface.co/datasets/jmberhold/VIBTARVE),
 now public and ungated, with **CC BY 4.0** dataset metadata. The maintainer confirmed

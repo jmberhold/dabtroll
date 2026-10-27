@@ -15,10 +15,11 @@ import subprocess
 import tarfile
 from urllib.parse import urlsplit
 import warnings
+import zipfile
 
 import pandas as pd
 import pyarrow as pa
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 
 if __package__:
@@ -337,6 +338,190 @@ def workbook_rows(path: Path, episode: dict, sources: Sources, portable: Portabl
     return raw_rows, annotations
 
 
+def stage_episode_access(source: Path, output: Path) -> dict:
+    """Expose already-sanitized reviews and verified frame pixels by episode."""
+    source, output = source.resolve(), output.resolve()
+    if (output / "episode_catalog.csv").exists():
+        raise FileExistsError("Episode access exports already exist")
+
+    def table(name):
+        return pd.concat(
+            pd.read_parquet(source / "data" / name / f"{cohort}.parquet")
+            for cohort in COHORTS
+        ).reset_index(drop=True)
+
+    episodes, annotations, rows, frames = (
+        table(name) for name in ("episodes", "human_annotations", "workbook_rows", "frames")
+    )
+    names = set(episodes.episode_dir)
+    if episodes.episode_dir.duplicated().any() or any(
+        Path(name).name != name or name in {".", ".."} for name in names
+    ):
+        raise ValueError("Invalid episode access keys")
+    for frame in (annotations, rows, frames):
+        if not set(frame.episode_dir).issubset(names):
+            raise ValueError("Episode access table references unknown episodes")
+    sheets = rows[rows.sheet.str.lower().str.startswith("sheet1")]
+    if set(sheets.episode_dir) != names or set(frames.episode_dir) != names:
+        raise ValueError("Every episode must have Sheet1 rows and saved frames")
+    if frames.duplicated(["archive_path", "member_path"]).any():
+        raise ValueError("Duplicate frame archive members")
+    for row in frames.itertuples():
+        member = Path(row.member_path)
+        expected = Path("episodes") / row.episode_dir / "frames" / row.camera
+        archive = Path(row.archive_path)
+        if (member.parent != expected or ".." in member.parts or member.is_absolute()
+                or archive.is_absolute() or ".." in archive.parts
+                or not archive.parts or archive.parts[:2] != ("media", "frames")):
+            raise ValueError("Unsafe episode frame reference")
+    for name in names:
+        target = output / "episodes" / name
+        for filename in ("human_review.xlsx", "sheet1_human_review.csv", "frames.zip",
+                         "frame_index.csv", "README.md"):
+            if (target / filename).exists():
+                raise FileExistsError(target / filename)
+    counts = Counter()
+    for archive_name, group in frames.groupby("archive_path", sort=True):
+        expected = group.set_index("member_path").to_dict("index")
+        with tarfile.open(source / archive_name, "r") as archive, ExitStack() as stack:
+            packages = {}
+            for member in archive:
+                if member.name not in expected or not member.isfile():
+                    raise ValueError(f"Unexpected frame member: {archive_name}/{member.name}")
+                record = expected.pop(member.name)
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise ValueError(f"Cannot read frame: {member.name}")
+                payload = stream.read()
+                if (len(payload) != record["bytes"]
+                        or hashlib.sha256(payload).hexdigest() != record["sha256"]):
+                    raise ValueError(f"Frame checksum mismatch: {member.name}")
+                name = record["episode_dir"]
+                if name not in packages:
+                    target = output / "episodes" / name / "frames.zip"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    packages[name] = stack.enter_context(zipfile.ZipFile(target, "a", compression=zipfile.ZIP_STORED))
+                relative = Path(member.name).relative_to(Path("episodes") / name).as_posix()
+                info = zipfile.ZipInfo(relative)
+                info.external_attr = 0o644 << 16
+                if relative in packages[name].namelist():
+                    raise ValueError(f"Duplicate episode frame: {relative}")
+                packages[name].writestr(info, payload)
+                counts[name] += 1
+            if expected:
+                raise ValueError(f"Missing indexed frame members: {archive_name}")
+    records = []
+    for episode in episodes.sort_values(["cohort", "scenario_id", "episode_dir"]).to_dict("records"):
+        name = episode["episode_dir"]
+        target = output / "episodes" / name
+        sheet = sheets[sheets.episode_dir.eq(name)].sort_values("row_number")
+        if (sheet.sheet.nunique() != 1 or sheet.row_number.duplicated().any()
+                or sheet.source_workbook_sha256.nunique() != 1):
+            raise ValueError(f"Ambiguous Sheet1 rows: {name}")
+        workbook = Workbook()
+        workbook.properties.creator = "VIBTARVE"
+        workbook.properties.lastModifiedBy = "VIBTARVE"
+        page = workbook.active
+        page.title = str(sheet.iloc[0]["sheet"])
+        for row in sheet.itertuples():
+            for column, cell in json.loads(row.cells_json).items():
+                copied = page[f"{column}{row.row_number}"]
+                copied.value = cell["value"]
+                if isinstance(cell["value"], str):
+                    copied.data_type = "s"
+                if cell.get("hyperlink"):
+                    copied.hyperlink = cell["hyperlink"]
+        workbook.save(target / "human_review.xlsx")
+        workbook.close()
+        reviewed = annotations[annotations.episode_dir.eq(name)].copy()
+        if reviewed.empty or not reviewed.confirmed_review.eq(bool(episode["human_reviewed"])).all():
+            raise ValueError(f"Inconsistent confirmed review flags: {name}")
+        reviewed.to_csv(target / "sheet1_human_review.csv", index=False)
+        index = frames[frames.episode_dir.eq(name)].copy()
+        index["zip_member_path"] = index.member_path.map(
+            lambda value: Path(value).relative_to(Path("episodes") / name).as_posix()
+        )
+        index.to_csv(target / "frame_index.csv", index=False)
+        status = "Completed human review" if episode["human_reviewed"] else "Unconfirmed / available review template"
+        video = episode.get("video_path")
+        video = video if isinstance(video, str) and video else ""
+        if video and (Path(video).is_absolute() or ".." in Path(video).parts
+                      or not (source / video).is_file()
+                      or not Path(video).is_relative_to(Path("episodes") / name)):
+            raise ValueError(f"Invalid episode video: {name}")
+        record = {
+            "episode_dir": name, "cohort": episode["cohort"], "scenario_id": episode["scenario_id"],
+            "human_reviewed": bool(episode["human_reviewed"]), "review_status": status,
+            "review_basis": episode["review_basis"], "sheet1_node_rows": len(reviewed),
+            "source_workbook_sha256": str(sheet.iloc[0].source_workbook_sha256),
+            "sheet1_xlsx": f"episodes/{name}/human_review.xlsx",
+            "sheet1_csv": f"episodes/{name}/sheet1_human_review.csv",
+            "frames_zip": f"episodes/{name}/frames.zip",
+            "frame_index": f"episodes/{name}/frame_index.csv",
+            "frame_count": counts[name], "cameras": ", ".join(sorted(index.camera.unique())),
+            "video_path": video, "video_status": episode["video_status"],
+        }
+        video_link = f"[Video]({Path(video).relative_to(Path('episodes') / name).as_posix()})" if video else "Video unavailable"
+        (target / "README.md").write_text(
+            f"# {name}\n\n**{status}** ({episode['review_basis']}). "
+            "Completed review does not mean successful task completion. Blank completion "
+            "times in unconfirmed templates are not negative labels.\n\n"
+            "- [Human review: Sheet1 XLSX](human_review.xlsx)\n"
+            "- [Human review: Sheet1 CSV](sheet1_human_review.csv)\n"
+            f"- [All {counts[name]} saved frames, both cameras](frames.zip)\n"
+            "- [Frame index and original pixel SHA256 hashes](frame_index.csv)\n"
+            f"- {video_link}\n\n"
+            "The XLSX is a reconstructed, sanitized Sheet1-only copy: saved values, "
+            "cell coordinates and hyperlinks are retained; formulas are inert text. "
+            "Original workbook properties, styling and other sheets are not included. "
+            "The CSV includes node rows with review confirmation and source provenance. "
+            "Extract frames.zip here to create frames/<camera>/frame_<step>.jpg; "
+            "the two recorded views are not interchangeable. Verify member hashes with "
+            "frame_index.csv. Source workbook SHA256: "
+            f"`{record['source_workbook_sha256']}`.\n\n"
+            "To contribute, retain episode/node IDs and the source revision, record your "
+            "reviewer revision and evidence in a separate copy, and submit a GitHub issue "
+            "or pull request describing the annotation change. Do not overwrite another "
+            "reviewer's judgments or treat a downloaded copy as an automatically accepted "
+            "annotation. Never publish private reviewer information.\n",
+            encoding="utf-8",
+        )
+        records.append(record)
+    catalog = pd.DataFrame(records)
+    catalog.to_csv(output / "episode_catalog.csv", index=False)
+    lines = [
+        "# Episode catalog: human reviews, frames and videos\n\n",
+        "Each episode has a Sheet1-only XLSX, node-row CSV, and frame ZIP containing both "
+        "camera views. Completed-review status is explicit; it does not mean task success. "
+        "Unconfirmed templates must not be scored as completed annotations. "
+        "The ZIPs contain unchanged image bytes, not newly sampled video frames.\n\n",
+        "[Download the full episode catalog](episode_catalog.csv)\n\n",
+    ]
+    for cohort in COHORTS:
+        part = catalog[catalog.cohort.eq(cohort)]
+        for confirmed in (True, False):
+            subset = part[part.human_reviewed.eq(confirmed)]
+            label = "Completed reviews" if confirmed else "Unconfirmed reviews / templates"
+            lines += [f"## {cohort}: {label} ({len(subset)})\n\n",
+                      "| Episode | Sheet1 | Frames | Video |\n|---|---|---|---|\n"]
+            for row in subset.to_dict("records"):
+                video = f"[MP4]({row['video_path']})" if row["video_path"] else "Unavailable"
+                lines.append(
+                    f"| [{row['episode_dir']}](episodes/{row['episode_dir']}/README.md) "
+                    f"| [XLSX]({row['sheet1_xlsx']}) / [CSV]({row['sheet1_csv']}) "
+                    f"| [ZIP ({row['frame_count']})]({row['frames_zip']}) | {video} |\n"
+                )
+            lines.append("\n")
+    (output / "EPISODES.md").write_text("".join(lines), encoding="utf-8")
+    return {
+        "catalog": "episode_catalog.csv", "browse": "EPISODES.md",
+        "episode_count": len(records), "frame_count": int(sum(counts.values())),
+        "sheet1_node_rows": len(annotations),
+        "completed_reviews": catalog[catalog.human_reviewed].groupby("cohort").size().to_dict(),
+        "transform": "Reconstructed sanitized Sheet1 XLSX/CSV and per-episode ZIPs from existing released tables and verified frame shards; original pixel bytes unchanged",
+    }
+
+
 def dataset_card(manifest: dict) -> str:
     tags = "\n".join(f"- {tag}" for tag in DATASET_TAGS)
     configs = "\n".join(
@@ -386,6 +571,11 @@ confirmation comes from the explicitly reviewed episode-1 analysis CSV; the eval
 schedule does not cover that separate cohort. `review_basis` records the distinction.
 
 ## Layout and loading
+
+Start with the [episode catalog](EPISODES.md) to find completed human reviews,
+Sheet1-only XLSX/CSV downloads, per-episode frame ZIPs containing both cameras,
+and videos. [episode_catalog.csv](episode_catalog.csv) provides the same links
+and explicit review-confirmation status for programmatic use.
 
 ```python
 from datasets import load_dataset
@@ -704,6 +894,7 @@ def prepare_release(root: Path, output: Path, *, expected_count: int = 488,
     observations["human_reviewed"] = observations.episode_dir.map(review_flags)
     tables["model_observations"] = observations.to_dict("records")
     table_info = {name: write_table(output, name, rows, portable) for name, rows in tables.items()}
+    episode_access = stage_episode_access(output, output)
     print("Normalizing summary CSV exports", flush=True)
     (output / "summaries").mkdir()
     for path in sorted(root.glob("*.csv")):
@@ -757,6 +948,7 @@ def prepare_release(root: Path, output: Path, *, expected_count: int = 488,
         "quality_issue_counts": dict(Counter(issue["kind"] for issue in issues)),
         "summary_csv_count": len(summary_exports), "tables": table_info,
         "paper_bundle": paper_assets,
+        "episode_access": episode_access,
         "originals_modified": False, "upload_performed": False,
         "source_code": "https://github.com/jmberhold/dabtroll",
         "code_state": "local_worktree_not_an_immutable_software_release",
@@ -794,6 +986,7 @@ def prepare_release(root: Path, output: Path, *, expected_count: int = 488,
         "*.mp4 filter=lfs diff=lfs merge=lfs -text\n"
         "*.pdf filter=lfs diff=lfs merge=lfs -text\n"
         "*.zip filter=lfs diff=lfs merge=lfs -text\n"
+        "*.xlsx filter=lfs diff=lfs merge=lfs -text\n"
         "*.csv filter=lfs diff=lfs merge=lfs -text\n", encoding="utf-8")
     print("Verifying source immutability and staged media/table integrity", flush=True)
     sources.verify()
