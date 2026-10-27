@@ -326,8 +326,10 @@ Start with the public [episode catalog](https://huggingface.co/datasets/jmberhol
 Each episode folder exposes:
 
 - `human_review.xlsx`: reconstructed **Sheet1_BT_Node_Review only**, retaining
-  sanitized saved cell values, coordinates and hyperlinks, without original
+  sanitized saved cell values, coordinates and external hyperlinks, without original
   workbook properties, styles or model sheets. Formulas remain inert text.
+  Dataset-local links are relative to the workbook; omitted `bt.svg` links open
+  the published `bt.json` instead.
 - `sheet1_human_review.csv`: Sheet1 node rows, including confirmation flags,
   completion times/frames, confidence, notes and source workbook hashes.
 - `frames.zip`: every saved image from both recorded camera views, with original

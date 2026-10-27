@@ -57,6 +57,8 @@ def fixture(root):
         sheet.append(["grasp", None, "human note"])
         sheet["C2"].hyperlink = "https://example.org/evidence"
         sheet["C3"] = "=1+1"
+        sheet["D4"] = "BT"
+        sheet["D4"].hyperlink = f"episodes/{name}/bt.svg"
         workbook.properties.creator = "Private Reviewer"
         workbook.properties.lastModifiedBy = "Private Reviewer"
         model = workbook.create_sheet("luna6_v2")
@@ -193,7 +195,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(manifest["readable_videos"], 1)
             self.assertEqual(manifest["summary_csv_count"], 4)
             self.assertEqual(manifest["tables"]["human_annotations"]["rows"], 2)
-            self.assertEqual(manifest["tables"]["workbook_rows"]["rows"], 10)
+            self.assertEqual(manifest["tables"]["workbook_rows"]["rows"], 12)
             self.assertFalse(manifest["upload_performed"])
             self.assertTrue(all(release.sha256(p) == digest for p, digest in original.items()))
             self.assertEqual(len(list(output.rglob("human_review.xlsx"))), 2)
@@ -231,6 +233,9 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(book.active["C2"].hyperlink.target, "https://example.org/evidence")
                 self.assertEqual(book.active["C3"].value, "=1+1")
                 self.assertEqual(book.active["C3"].data_type, "s")
+                self.assertEqual(book.active["D4"].hyperlink.target, "bt.json")
+                self.assertTrue((output / episode["sheet1_xlsx"]).parent.joinpath(
+                    book.active["D4"].hyperlink.target).is_file())
                 self.assertEqual(book.properties.creator, "VIBTARVE")
                 book.close()
                 review = pd.read_csv(output / episode["sheet1_csv"])
