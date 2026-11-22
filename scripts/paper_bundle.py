@@ -41,20 +41,21 @@ STYLE = {
     "savefig.dpi": 300, "figure.facecolor": "white", "axes.facecolor": "white",
 }
 CLOCK_NOTE = (
-    "Node comparisons use ordinal positions, not semantic BT equivalence. "
-    "Only shared positions are scored; extra positions are not false incomplete. "
-    "Whole-mission agreement excludes unequal node counts. Original IDs and binding "
-    "provenance are retained; some Qwen3 episode bindings use explicitly inferred "
-    "frame-zero response-prefix order with recorded full BT counts. "
-    "Original Qwen3-VL uses a historical source-clock convention. "
-    "Reconcile clocks before publishing cross-auditor timing claims; use current "
-    "timing tables rather than the earlier manuscript's exact-ID examples. "
-    "Luna 6 uses ten separate images per full window (3.6 s first-to-last); historical "
-    "Qwen3.8 uses eight-frame contact sheets (2.8 s first-to-last). These are not "
-    "controlled input-matched comparisons, and local/cloud latency is not a controlled hardware benchmark. "
-    "Luna timing is calibrated from saved frame indices and measured video duration, rounded as in "
-    "the replay writer; original workbook times remain in stored_video_time fields. "
-    "Calibration uses the existing duration-ratio convention, not new visual event annotations. "
+    "Every primary auditor (Qwen3-VL, Qwen3.5, Molmo2, Gemma 4, Qwen3.8, Luna 6) judged the same "
+    "recordings against each recording's own saved behavior tree, verified for all 464 evaluation "
+    "recordings; the per-run audit is in the selected-run ledger. Nodes are matched by saved node ID "
+    "bound to ordinal positions, and every primary run's node count equals the reviewed contract. "
+    "Whole-mission agreement requires every required node complete on both sides. "
+    "Qwen3-VL, Qwen3.5, and Luna 6 completion times scale simulator time to the measured recording "
+    "duration, rounded as in the replay writer; seven recordings whose video duration could not be "
+    "measured have blank video times for these three auditors, so no timing is scored there "
+    "(none of the seven is human-reviewed). Molmo2, Gemma 4, and Qwen3.8 times come from their saved "
+    "review sheets. Luna calibration uses the duration-ratio convention, not new visual event "
+    "annotations; original workbook times remain in stored_video_time fields. "
+    "Auditors received different inputs and prompts: Luna 6 uses ten separate images per full window "
+    "(3.6 s first-to-last), Qwen3.8 uses eight-frame contact sheets (2.8 s first-to-last), and prompts "
+    "and token budgets are model-specific, so differences are not a controlled input-matched comparison. "
+    "Local/cloud latency is not a controlled hardware benchmark. "
     "Simulator success, human planned-path completion, and auditor judgments remain separate signals."
 )
 STAGE_TITLES = {"01": "Corpus and Stage 1", "02": "Stage 2 and node-family diagnostic", "03": "Stages 3A--3E"}
@@ -67,10 +68,12 @@ FIGURE_INFO = {
                "Cuttingboard-to-Pot episode 3: start, midpoint, and first simulator-success frames. Times are simulator machine seconds, not human/replay-video seconds; see e03_frames for exact selection."),
     "sensitivity": ("f04_auditors", "Auditor sensitivity",
                     "Mission balanced accuracy on confirmed reviewed evaluation episodes; labels show paired denominators. Missing model episodes are excluded, not negative predictions."),
-    "prompt": ("f05_prompt", "Qwen3.5 prompt sensitivity",
-               "Common available full-corpus completion tendency and common human-reviewed FP/FN counts. Overall weights episodes, not task percentages. No Qwen3.8 development revisions are pooled."),
+    "prompt": ("f05_prompt", "Qwen3.5 prompt sensitivity (historical supplement)",
+               "Original Qwen3 prompt (Sheet3, at most eight frames) versus the Qwen3.5 Mod1 prompt (ten frames) on common available evaluation episodes whose original-prompt run was recorded on the final saved BT. Settings differ beyond the prompt, so this is not a prompt-only comparison; original-prompt runs recorded before the last BT regeneration are excluded (see d22_run_alignment). Common human-reviewed FP/FN counts; overall weights episodes, not task percentages. No Qwen3.8 development revisions are pooled."),
     "family": ("f06_families", "Node-family agreement",
-               "Balanced accuracy and FP/N plus FN/N shares of shared reviewed positions, not conditional FPR/FNR. Unreached positions inside known contracts remain incomplete; extras are excluded. Families describe reference positions, not semantic equivalence with historical model nodes."),
+               "Balanced accuracy and FP/N plus FN/N shares of shared reviewed positions, not conditional FPR/FNR. The green-blue heatmap uses a fixed 45-85% color scale; endpoint extensions indicate saturation outside this range. Unreached positions inside known contracts remain incomplete; extras are excluded. Families describe the reviewed contract's node positions."),
+    "family_accuracy": ("f06_families_accuracy", "Node-family balanced accuracy",
+                        "Balanced accuracy by reference node family on shared reviewed positions, with sample sizes. The green-blue heatmap uses a fixed 45-85% color scale; endpoint extensions indicate saturation outside this range. This is the accuracy-only companion to f06_families, using the same cohorts and values; missing class support remains N/A."),
     "mission": ("f07_mission", "Mission agreement by task",
                 "Human-referenced positional mission balanced accuracy on equal full node counts only. Each side requires its own entire contract complete. Equal counts do not establish semantic BT equivalence; model-specific cohorts remain explicit."),
     "nodes": ("f08_nodes", "Required-node agreement by task",
@@ -82,16 +85,17 @@ FIGURE_INFO = {
 }
 TABLE_INFO = {
     "node_position_reconciliation": ("d21_node_positions", "Ordinal node comparability",
-                                    "Model-specific full node counts, shared and extra positions, and recorded or inferred binding provenance. Unequal counts are excluded from whole-mission agreement; only shared positions enter node metrics."),
+                                    "Model-specific node counts against the reviewed contract, with shared and extra positions and binding provenance. Primary runs bind nodes by saved BT node ID and match the contract's count. Any unequal count would be excluded from whole-mission agreement, and only shared positions enter node metrics."),
     "corpus": ("d01_corpus", "Evaluation corpus", "Episode counts, simulator outcomes, required-node totals, and BT-size summaries. Simulator rates use known outcomes."),
     "endpoint_validity": ("d02_endpoint", "Endpoint validity", "Human-reference confusion counts and metrics for each simulator signal and task; unknown states are excluded and counted."),
     "endpoint_patterns": ("d03_patterns", "Endpoint agreement patterns", "Exact joint simulator-ever, final-frame, and human planned-path outcomes within confirmed reviews."),
     "review_coverage": ("d04_reviews", "Human review coverage", "Scheduled/completed review and required human-node availability; missing review does not become a negative label."),
     "sensitivity": ("d05_auditors", "Auditor coverage and sensitivity", "Full denominator cascade, saved observation counts, latency summaries, and human-referenced mission metrics. Latencies are not controlled hardware benchmarks."),
-    "paired_sensitivity": ("d06_paired", "Paired prompt decisions", "Common reviewed Qwen3.5 prompt cohorts and directional changes in correctness; not independent-sample significance."),
+    "paired_sensitivity": ("d06_paired", "Paired prompt decisions", "Common reviewed cohorts for the original Qwen3 prompt (BT-aligned Sheet3 runs only) and the Qwen3.5 Mod1 prompt, with directional changes in correctness. Historical supplement with unmatched frame settings; not independent-sample significance."),
+    "run_alignment": ("d22_run_alignment", "Run BT-alignment audit", "Selected-run disposition per auditor and cohort. Runs recorded on the final saved BT are analysed; runs that predate the last BT regeneration are excluded and counted here rather than dropped silently."),
     "replay_provenance": ("d07_provenance", "Selected configuration provenance", "Saved model/prompt/input settings and snapshot provenance captured in the CSV, not reconstructed from workbooks."),
-    "prompt_completion_rates": ("d08_claims", "Prompt completion tendency", "Completion claims on common available evaluation episodes by task and episode-weighted overall."),
-    "prompt_error_tradeoff": ("d09_errors", "Prompt error tradeoff", "FP/FN and other mission metrics on the common confirmed human-reviewed prompt cohort."),
+    "prompt_completion_rates": ("d08_claims", "Prompt completion tendency", "Completion claims on common available evaluation episodes by task and episode-weighted overall; historical original-prompt supplement restricted to BT-aligned runs."),
+    "prompt_error_tradeoff": ("d09_errors", "Prompt error tradeoff", "FP/FN and other mission metrics on the common confirmed human-reviewed prompt cohort (BT-aligned original-prompt runs only; not a prompt-only comparison)."),
     "node_family_metrics": ("d10_families", "Node-family metrics", "Family/auditor confusion counts, balanced accuracy, and FP/N and FN/N shares of all reviewed family pairs."),
     "auditability": ("d11_auditability", "BT auditability", "Structural completeness, explicit semantic-rating availability, and annotation coverage are separate measurements."),
     "mission_metrics": ("d12_mission", "Mission agreement", "Positional human-reference confusion counts on confirmed reviews with equal full node counts. Unequal counts are excluded; equal counts do not establish semantic BT equivalence."),
@@ -122,15 +126,39 @@ def _wrap(value: str, width: int) -> str:
     return "\n".join(textwrap.fill(line, width=width, break_long_words=False) for line in value.splitlines())
 
 
+def _fit_ylabels(figure: plt.Figure, axes: list) -> bool:
+    """Wrap y labels that run off the canvas; they are centered on their axes and otherwise clipped."""
+    renderer = figure.canvas.get_renderer()
+    margin = 0.05 * figure.dpi
+    ceiling = figure.bbox.height - margin
+
+    def clipped(label) -> bool:
+        extent = label.get_window_extent(renderer)
+        return extent.y0 < margin or extent.y1 > ceiling
+
+    changed = False
+    for axis in axes:
+        label = axis.yaxis.label
+        if not label.get_text() or not clipped(label):
+            continue
+        text = " ".join(label.get_text().split())
+        for width in range(min(len(text), 42) - 1, 7, -1):
+            label.set_text(textwrap.fill(text, width=width, break_long_words=False))
+            if not clipped(label):
+                break
+        changed = True
+    return changed
+
+
 def prepare_figure(figure: plt.Figure, name: str, title: str, layout: str = "stacked",
-                   compact_header: bool = False) -> None:
+                   compact_header: bool = True) -> None:
     """Use physical manuscript width and a font floor, rather than oversized art scaled down."""
     if layout not in {"stacked", "side_by_side"}:
         raise ValueError(f"Unknown figure layout: {layout}")
     horizontal = layout == "side_by_side"
     scale = 2 if horizontal else 1
     paired = name in {"corpus", "endpoint", "prompt", "family", "timing"}
-    colorbar = figure.axes[0].images[0].colorbar if name == "family" else None
+    colorbar = figure.axes[0].images[0].colorbar if name in {"family", "family_accuracy"} else None
     if colorbar is not None:
         colorbar.remove()
     axes = list(figure.axes)
@@ -143,11 +171,8 @@ def prepare_figure(figure: plt.Figure, name: str, title: str, layout: str = "sta
             axis.set_subplotspec(grid[index])
     if colorbar is not None:
         image = axes[0].images[0]
-        image.set_cmap("cividis")
-        figure.colorbar(image, ax=axes[0], shrink=0.8, label="Balanced accuracy (%)")
-        for text in axes[0].texts:
-            score = text.get_text().splitlines()[0]
-            text.set_color("white" if score != "N/A" and float(score) < 50 else "black")
+        figure.colorbar(image, ax=axes[0], shrink=0.8, label=colorbar.ax.get_ylabel(),
+                        ticks=colorbar.get_ticks(), extend=colorbar.extend)
     for axis in axes:
         for text in axis.texts:
             text.set_visible(True)
@@ -243,22 +268,33 @@ def prepare_figure(figure: plt.Figure, name: str, title: str, layout: str = "sta
             axis.set_title(_wrap(axis.get_title().replace("\n", " "), 34), fontsize=11 * scale, pad=14)
     heading.set_fontsize(12 * scale)
     bottom = 0.16 if horizontal and name == "timing" else 0.10 if horizontal else 0.075
-    figure.tight_layout(rect=(0.015, bottom, 0.985, 0.91 if horizontal else 0.94),
-                        pad=1.2, h_pad=2.0, w_pad=2.0)
-    figure.canvas.draw()
-    if compact_header:
-        renderer = figure.canvas.get_renderer()
-        top = max(axis.title.get_window_extent(renderer).y1 for axis in axes) / figure.dpi
-        heading_height = heading.get_window_extent(renderer).height / figure.dpi
-        old_height = figure.get_figheight()
-        height = top + heading_height + 0.18 * scale
-        positions = [axis.get_position().frozen() for axis in axes]
-        figure.set_size_inches(figure.get_figwidth(), height)
-        for axis, position in zip(axes, positions):
-            axis.set_position((position.x0, position.y0 * old_height / height,
-                               position.width, position.height * old_height / height))
-        heading.set_y(1 - 0.08 * scale / height)
+    full_size = tuple(figure.get_size_inches())
+
+    def lay_out() -> None:
+        figure.set_size_inches(*full_size)
+        figure.tight_layout(rect=(0.015, bottom, 0.985, 0.91 if horizontal else 0.94),
+                            pad=1.2, h_pad=2.0, w_pad=2.0)
         figure.canvas.draw()
+        if compact_header:
+            renderer = figure.canvas.get_renderer()
+            top = max(
+                (axis.title if axis.get_title() else axis).get_window_extent(renderer).y1
+                for axis in axes
+            ) / figure.dpi
+            heading_height = heading.get_window_extent(renderer).height / figure.dpi
+            old_height = figure.get_figheight()
+            height = top + heading_height + 0.18 * scale
+            positions = [axis.get_position().frozen() for axis in axes]
+            figure.set_size_inches(figure.get_figwidth(), height)
+            for axis, position in zip(axes, positions):
+                axis.set_position((position.x0, position.y0 * old_height / height,
+                                   position.width, position.height * old_height / height))
+            heading.set_y(1 - 0.08 * scale / height)
+            figure.canvas.draw()
+
+    lay_out()
+    if _fit_ylabels(figure, axes):
+        lay_out()
     if name == "case":
         paper.layout_case_frames(figure)
     if horizontal and name == "sequential":
@@ -321,15 +357,21 @@ def _write_table(output: Path, stage: str, label: str, title: str, description: 
 
 
 def _write_figure(output: Path, stage: str, name: str, label: str, title: str,
-                  description: str, figure: plt.Figure, compact_header: bool = False) -> dict:
+                  description: str, figure: plt.Figure, compact_header: bool = True) -> dict:
     directory = output / "figures"
     directory.mkdir(parents=True, exist_ok=True)
     files = {}
     layouts = ("stacked", "side_by_side") if name in MULTIPANEL_NAMES else ("stacked",)
     for layout in layouts:
         prepare_figure(figure, name, title, layout=layout, compact_header=compact_header)
-        bounds = figure.get_tightbbox(figure.canvas.get_renderer())
-        if bounds.x0 < 0 or bounds.y0 < 0 or bounds.x1 > figure.get_figwidth() or bounds.y1 > figure.get_figheight():
+        renderer = figure.canvas.get_renderer()
+        bounds = figure.get_tightbbox(renderer)
+        # Tight bounds ignore axis labels longer than their axes, so check those extents directly.
+        labels = [text.get_window_extent(renderer) for axis in figure.axes
+                  for text in (axis.xaxis.label, axis.yaxis.label) if text.get_text()]
+        if (bounds.x0 < 0 or bounds.y0 < 0 or bounds.x1 > figure.get_figwidth() or bounds.y1 > figure.get_figheight()
+                or any(box.x0 < 0 or box.y0 < 0 or box.x1 > figure.bbox.width or box.y1 > figure.bbox.height
+                       for box in labels)):
             raise ValueError(f"{label} ({layout}): figure decorations extend outside the manuscript canvas")
         tail = "_side" if layout == "side_by_side" else ""
         with plt.rc_context(STYLE):
@@ -390,6 +432,8 @@ def _write_index(output: Path, catalog: dict) -> None:
         "- [Full unchanged source CSV](data/episodes.csv); SHA256: `" + source["sha256"] + "`.\n"
         "- [Catalog and provenance](manifest.json).\n"
         "- `figures/`: short-labeled vector PDFs and 300 dpi PNGs, 7.2 inches wide, minimum 9.5 pt text.\n"
+        "- Main-title/panel-title spacing is 0.1 inch at the intended 7.2-inch print width, matching the prompt-development figures.\n"
+        "- `figures/f06_families_accuracy.pdf` / `.png`: standalone node-family balanced accuracy and sample sizes; the combined diagnostic is retained.\n"
         "- `*_side.pdf` / `*_side.png`: side-by-side alternatives for every two-/three-panel chart; "
         "14.4-inch masters with minimum 19 pt text (9.5 pt at a 7.2-inch print width).\n"
         "- `prompt_development/`, when explicitly exported: separate Qwen3.8 and Luna 6 v1--v5 episode-1 "
@@ -484,7 +528,7 @@ def export_stage(results: paper.PaperResults, source_csv: Path | str, output_dir
                                    f"Reference ID: {case['node_id']}; model ID: {case['model_node_id']}; "
                                    f"binding: {case['node_position_basis']}. "
                                    f"Reference criterion: {case['success_criteria']}. Saved claim ({case['evidence_basis']}): {case['model_notes']}. "
-                                   "Position matching does not assert equivalent historical BT criteria. "
+                                   "Position matching binds the saved node ID to the reviewed contract position. "
                                    "Frames not matching the saved response token are context only. Selection is representative evidence, not a prevalence estimate.")
                     figure = paper.plot_case(case)
                     entries.append(_write_figure(output, stage, "case", label,
@@ -492,7 +536,9 @@ def export_stage(results: paper.PaperResults, source_csv: Path | str, output_dir
                     plt.close(figure)
         factories = {
             "01": {"corpus": paper.plot_corpus, "endpoint": paper.plot_simulator_endpoint},
-            "02": {"sensitivity": paper.plot_sensitivity, "prompt": paper.plot_prompt_sensitivity, "family": paper.plot_node_family_performance},
+            "02": {"sensitivity": paper.plot_sensitivity, "prompt": paper.plot_prompt_sensitivity,
+                   "family": paper.plot_node_family_performance,
+                   "family_accuracy": paper.plot_node_family_balanced_accuracy},
             "03": {"mission": paper.plot_metric_by_scenario, "nodes": lambda r: paper.plot_metric_by_scenario(r, "node"),
                    "sequential": paper.plot_sequential_completion, "timing": paper.plot_timing},
         }[stage]

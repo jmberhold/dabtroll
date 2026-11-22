@@ -2540,7 +2540,7 @@ def _build_btaudit2_molmo2_episode1_per_model_rows(
                             {
                                 "review_row": int(row["review_row"]),
                                 "video_time_m:ss": _to_mmss_str(row["video_time_m:ss"]),
-                                "video_time_s": float(row["video_time_s"]),
+                                "video_time_s": None if pd.isna(row["video_time_s"]) else float(row["video_time_s"]),
                                 "node_id": "" if pd.isna(row["node_id"]) else str(row["node_id"]),
                                 "model_status": "" if pd.isna(row["model_status"]) else str(row["model_status"]),
                                 "model_progress": (
@@ -2680,7 +2680,7 @@ def _add_molmo_episode_fields(
                         {
                             "review_row": int(row["review_row"]),
                             "video_time_m:ss": _to_mmss_str(row["video_time_m:ss"]),
-                            "video_time_s": float(row["video_time_s"]),
+                            "video_time_s": None if pd.isna(row["video_time_s"]) else float(row["video_time_s"]),
                             "model_status": "" if pd.isna(row["model_status"]) else str(row["model_status"]),
                             "model_progress": None if pd.isna(row["model_progress"]) else float(row["model_progress"]),
                             "model_notes": "" if pd.isna(row["model_notes"]) else str(row["model_notes"]),
@@ -2700,7 +2700,7 @@ def _add_molmo_episode_fields(
             {
                 "review_row": int(row["review_row"]),
                 "video_time_m:ss": _to_mmss_str(row["video_time_m:ss"]),
-                "video_time_s": float(row["video_time_s"]),
+                "video_time_s": None if pd.isna(row["video_time_s"]) else float(row["video_time_s"]),
                 "node_id": "" if pd.isna(row["node_id"]) else str(row["node_id"]),
                 "model_status": "" if pd.isna(row["model_status"]) else str(row["model_status"]),
                 "model_progress": None if pd.isna(row["model_progress"]) else float(row["model_progress"]),

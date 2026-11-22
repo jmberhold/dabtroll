@@ -1,4 +1,4 @@
-# Research attribution and release checklist
+# Research attribution, licensing and release status
 
 ## Citing VIBTARVE
 
@@ -70,29 +70,46 @@ provenance, licensing, benchmark quality, or permission to republish weights.
 - Results/figures and uncertainties tied to the actual reviewed cohort. The
   recorded 464/464 model coverage is not an accuracy or human-review claim.
 
-## Unresolved release items
+## Release status and licensing
 
-**No implementation-repository software license has been selected.** The
-separate [`jmberhold/VIBTARVE`](https://huggingface.co/datasets/jmberhold/VIBTARVE)
-dataset repository was created privately with **CC BY 4.0** metadata, and the
-maintainer confirmed upstream redistribution rights and reviewer consent on
-October 24, 2026. These dataset terms do not relicense this code, model weights,
-or upstream assets as standalone resources. No annotation contribution
-agreement or automated contribution service is implied.
+### Completed dataset release
 
-For public dataset releases, maintain:
-
-1. Record the maintainer's rights confirmation and preserve compatible upstream
-   attribution for simulator-derived images/videos, model outputs and annotations.
-2. Retain reviewer consent confirmation and review any personal data in
-   notes/paths/links after staging and sanitization.
-3. Stable versioned download/checksum manifests, environment/upstream revision
-   capture, dataset card, limitations and intended-use guidance.
-4. Append-only annotation contribution schema, review/moderation process,
-   adjudication/conflict policy and correction history.
-
-The approved dataset snapshot was uploaded privately and then made public and
-ungated on October 24, 2026; see the
+The separate
+[`jmberhold/VIBTARVE`](https://huggingface.co/datasets/jmberhold/VIBTARVE)
+dataset is released under **CC BY 4.0**. The maintainer confirmed upstream
+redistribution rights and reviewer consent on October 24, 2026. The approved
+snapshot was uploaded privately and then made public and ungated that day;
+anonymous table and media access were verified. These are completed release
+steps, not outstanding dataset-release blockers. See the
 [release record](btaudit2_dataset.md#local-hugging-face-release-candidate).
-Anonymous table and media access were verified. There is no supplied paper DOI
-or automated multi-reviewer hosting service.
+
+### Implementation and third-party terms
+
+The original VIBTARVE implementation and associated documentation are released
+under the [MIT License](../LICENSE), as selected by the maintainer on
+October 27, 2026. Preserve its copyright and permission notice when distributing
+copies or substantial portions of the software.
+
+Software licensing and dataset licensing are separate: the published dataset
+remains **CC BY 4.0**. Neither the software's MIT license nor the dataset's
+CC BY 4.0 license relicenses third-party dependencies, model weights, or upstream
+assets as standalone resources. Preserve applicable third-party attribution,
+license notices and usage terms.
+
+### Ongoing maintenance and future contributions
+
+For future releases and contributions:
+
+1. Retain the recorded rights confirmation and preserve compatible upstream
+   attribution for simulator-derived images/videos, model outputs and annotations.
+2. Retain existing reviewer consent confirmation, confirm consent for new reviews,
+   and review personal data in notes/paths/links after staging and sanitization.
+3. Maintain stable versioned download/checksum manifests, environment/upstream revision
+   capture, dataset card, limitations and intended-use guidance.
+4. Preserve append-only annotation revisions and correction history. For new
+   contributions, document review/moderation and adjudication/conflict handling
+   using the [contribution procedure](btaudit2_dataset.md#adding-recordings-or-human-review).
+
+These ongoing responsibilities do not imply an annotation contribution agreement
+or an automated multi-reviewer hosting service. No paper DOI has been supplied;
+manuscript publication metadata remains separate from dataset-release status.

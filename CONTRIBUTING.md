@@ -70,6 +70,8 @@ Do not run BT regeneration or workbook repair on the canonical reviewed snapshot
 
 The public dataset is hosted separately on
 [Hugging Face](https://huggingface.co/datasets/jmberhold/VIBTARVE) under CC BY 4.0.
+Redistribution rights and reviewer consent for the released dataset were
+confirmed on October 24, 2026.
 Future annotation contributions still need explicit revision records, reviewer
 consent and review/adjudication rules; no automated annotation service is implied.
 GitHub is for code, tests, documentation and portable cohort manifests, not
@@ -82,5 +84,9 @@ actually used, exact checkpoint IDs/revisions, quantization publisher, and the
 VIBTARVE implementation commit in the legacy repository. The supplied paper
 title/authors are recorded in [CITATION.cff](CITATION.cff); do not invent a DOI,
 publication status, benchmark claims or licenses.
-No repository license has been selected yet; opening this code for review
-does not grant an unstated redistribution license.
+The original implementation and associated documentation are released under the
+[MIT License](LICENSE). Contributions to this software are provided under the
+same license; submit only material you are authorized to contribute and preserve
+third-party notices. The dataset remains CC BY 4.0, and neither license
+supersedes third-party dependency, model or asset terms. See
+[release status and licensing](docs/research_attribution.md#release-status-and-licensing).

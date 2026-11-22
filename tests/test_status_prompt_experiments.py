@@ -46,6 +46,17 @@ class PromptTests(unittest.TestCase):
         for name, builder in prompts.STATUS_PROMPT_BUILDERS.items():
             self.assertEqual(prompts.load_status_prompt(name)("a", "b", "c"), builder("a", "b", "c"))
 
+    def test_qwen_model_prompt_snapshots_match_historical_builders(self):
+        snapshots = (
+            ("qwen3_v1", prompts.status_eval_text),
+            ("qwen35_mod1_v1", prompts.status_eval_text_qwen3_5),
+        )
+        for name, builder in snapshots:
+            profile = prompts.load_status_prompt(name)
+            for progress, criteria in ((None, None), ([0.1, 0.555], ["grasped", "lifted"])):
+                args = ("action", "Pick $cup", "Cup lifted", progress, criteria)
+                self.assertEqual(profile(*args), builder(*args).rstrip("\n"), name)
+
     def test_template_validation_and_frozen_resolution(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model_v2.txt"
@@ -277,15 +288,35 @@ class ReplayTests(unittest.TestCase):
         self.assertFalse(result["review_sheet_written"])
         self.assertTrue(Path(result["replay_output_dir"], "missionengine.jsonl").exists())
 
-    def test_unreadable_saved_video_fails_before_inference(self):
+    def test_unreadable_saved_video_replays_without_fabricated_video_time(self):
         video = self.episode / "video"
         video.mkdir()
         (video / "test.mp4").write_bytes(b"unreadable video")
+        workbook = load_workbook(self.episode / "human_rater_evaluation.xlsx")
+        previous_sheet = workbook.create_sheet("Sheet2_MissionEngine_Review")
+        previous_sheet.cell(row=9, column=7, value="frame_00002.jpg")
+        previous_sheet.cell(row=9, column=8, value="0:01")
+        workbook.save(self.episode / "human_rater_evaluation.xlsx")
+
+        client = Mock()
+        client.request.side_effect = [self.health, self.response]
         with patch.object(replay, "_safe_video_duration_seconds", return_value=None), \
-                patch.object(replay, "MissionEngineClient") as client:
-            with self.assertRaisesRegex(ValueError, "simulation seconds must not be labeled video time"):
-                replay._replay_episode(**self.args)
-        client.assert_not_called()
+                patch.object(replay, "MissionEngineClient", return_value=client):
+            result = replay._replay_episode(**self.args)
+
+        self.assertFalse(result["mission_has_errors"])
+        config = json.loads((Path(result["replay_output_dir"]) / "replay_config.json").read_text())
+        self.assertEqual(config["review_timing"]["clock"], "simulation_no_video")
+        self.assertEqual(
+            config["review_timing"]["video_time_unavailable_reason"],
+            "video_duration_unavailable",
+        )
+        workbook = load_workbook(self.episode / "human_rater_evaluation.xlsx")
+        try:
+            self.assertIsNone(workbook["Sheet2_MissionEngine_Review"].cell(row=9, column=9).value)
+            self.assertIsNone(workbook["qwen38_v1"].cell(row=9, column=9).value)
+        finally:
+            workbook.close()
 
     def test_shell_experiment_freezes_prompt_and_writes_valid_json(self):
         self._assert_shell_experiment()

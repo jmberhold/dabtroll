@@ -87,6 +87,16 @@ mission completion and transport-clean model coverage are different measures.
 The abstract does not identify these best finalized scores with the later
 Qwen3.8 prompt experiment; do not attribute them to that experiment.
 
+The supplied abstract's best finalized scores predate the corrected-BT replays.
+Collection originally regenerated the behavior tree only every 4-6 episodes; it
+now produces one per episode, and Qwen3-VL and Qwen3.5 were replayed on every
+evaluation recording against its own BT. The refreshed dataset exports compare all six
+primary auditors on each recording's own BT. Qwen3-VL and Qwen3.5 therefore
+change (for example, node-level balanced accuracy is now 0.734 and 0.802), while
+Molmo2, Gemma 4, Qwen3.8 and Luna 6 are unchanged. Reconcile manuscript numbers
+with the refreshed [paper bundle](../data/derived/vibtarve_paper/index.html)
+before citing them.
+
 The local snapshot also includes 24 episode-1 prompt-tuning recordings, separate
 from the 464 episode-2--21 evaluation recordings. Its verified 464/464 v4 model
 coverage and 3,690 clean responses establish saved inference coverage, not the
@@ -112,7 +122,7 @@ paper's human-reviewed counts or accuracy claims.
   | Notebook | Figures |
   | --- | --- |
   | Corpus / Stage 1 | Simulator ever/final outcomes and human-reference confusion heatmap; start/middle/first-simulator-success frame triptych |
-  | Stage 2 sensitivity | Qwen3.5 inherited/tailored prompt completion tendency and FP/FN tradeoff; node-family balanced accuracy and error-share diagnostic (Stage 3C companion) |
+  | Stage 2 sensitivity | Qwen3.5 original/model-specific prompt completion tendency and FP/FN tradeoff (historical supplement on the 102 BT-aligned original-prompt recordings); node-family balanced accuracy and error-share diagnostic (Stage 3C companion) |
   | Stages 3A--3E | Sequential four-outcome completion bars for Nodes 1--3 (tables retain Node 4); completion-event union and matched timing violin/box panels |
 
   All exports share the [paper bundle](../data/derived/vibtarve_paper/index.html)
@@ -125,11 +135,11 @@ paper's human-reviewed counts or accuracy claims.
   simulator-machine times; these are not human/replay-video times. Node-family
   error shares use all reviewed family pairs as the denominator, not conditional
   FPR/FNR. Timing-event proportions exclude both-incomplete nodes and preserve
-  both-complete events with missing timestamps. The documented original-Qwen3
-  source-clock discrepancy remains visible rather than forcing manuscript values.
+  both-complete events with missing timestamps. Qwen3-VL, Qwen3.5 and Luna times
+  are scaled to video duration; seven unreadable videos carry no video time.
 - [Prompt experiments](status_prompt_experiments.md): immutable prompts and
   sequential replay with protected outputs.
 - [Mission server](mission_engine_server.md): installation and model serving.
 - [Attribution](research_attribution.md): software/manuscript citation,
-  upstream obligations and unresolved licensing.
+  dataset-release confirmation, MIT software licensing and upstream obligations.
 - [Contributing](../CONTRIBUTING.md): code, notebooks and research-evidence policy.

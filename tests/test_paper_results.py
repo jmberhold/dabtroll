@@ -14,7 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 import pandas as pd
 from PIL import Image
 
@@ -24,6 +24,7 @@ from scripts.paper_results import (
     plot_timing, progress_alignment, publication_tables, representative_cases,
     plot_simulator_endpoint, plot_prompt_sensitivity, plot_node_family_performance,
     plot_sequential_completion, plot_episode_triptych, plot_case,
+    plot_node_family_balanced_accuracy,
 )
 from scripts import build_btaudit2_visualization_dataset as dataset
 
@@ -289,6 +290,29 @@ class PaperResultsTests(unittest.TestCase):
         self.assertTrue(pd.isna(families.loc["State change or interaction", "balanced_accuracy"]))
         figure = plot_node_family_performance(result)
         self.assertEqual(figure.axes[0].images[0].get_array().shape, (3, 6))
+        standalone = plot_node_family_balanced_accuracy(result)
+        self.assertEqual(len(standalone.axes), 2)
+        self.assertEqual(standalone._suptitle.get_text(), "Node-family balanced accuracy")
+        self.assertFalse(standalone.axes[0].get_title())
+        np.testing.assert_equal(standalone.axes[0].images[0].get_array(),
+                                figure.axes[0].images[0].get_array())
+        self.assertEqual([text.get_text() for text in standalone.axes[0].texts],
+                         [text.get_text() for text in figure.axes[0].texts])
+        self.assertFalse(standalone.axes[0].patches)
+        image = standalone.axes[0].images[0]
+        self.assertEqual(image.get_cmap().name, "GnBu")
+        self.assertEqual(image.get_clim(), (45, 85))
+        for text in standalone.axes[0].texts:
+            value = text.get_text().splitlines()[0]
+            if value == "N/A":
+                self.assertEqual(text.get_color(), "black")
+                continue
+            rgb = np.array(image.to_rgba(float(value))[:3])
+            linear = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+            luminance = np.dot(linear, [0.2126, 0.7152, 0.0722])
+            contrast = (luminance + 0.05) / 0.05 if text.get_color() == "black" else 1.05 / (luminance + 0.05)
+            self.assertGreaterEqual(contrast, 4.5)
+        plt.close(standalone)
         plt.close(figure)
 
     def test_temporal_event_union_excludes_both_incomplete_and_keeps_missing_clocks(self):
@@ -545,6 +569,15 @@ class PaperResultsTests(unittest.TestCase):
             self.assertTrue(provenance.snapshot_matches)
             self.assertEqual(provenance.analysis_time_basis, "frame_index_scaled_to_video_duration")
             self.assertEqual(provenance.analysis_video_seconds_per_step, 0.2)
+            kept = result.tables["run_alignment"].query("model_key == 'luna6'").iloc[0]
+            self.assertTrue(kept.in_analysis)
+            flagged_csv = root / "flagged.csv"
+            episodes.assign(luna6_bt_aligned=False).to_csv(flagged_csv, index=False)
+            flagged = load_paper_results(flagged_csv, cohort_manifest=manifest)
+            self.assertTrue(flagged.node_model.query("model_key == 'luna6'").empty)
+            dropped = flagged.tables["run_alignment"].query("model_key == 'luna6'").iloc[0]
+            self.assertFalse(dropped.in_analysis)
+            self.assertEqual(dropped.episodes, 1)
             corpus = result.tables["corpus"].iloc[-1]
             self.assertEqual((corpus.episodes, corpus.reviewed, corpus.required_nodes), (1, 0, 1))
             self.assertEqual((corpus.success_ever, corpus.final_frame_success), (1, 0))
@@ -576,6 +609,163 @@ class PaperResultsTests(unittest.TestCase):
             episodes.drop(columns="qwen38_observations_json").to_csv(old, index=False)
             with self.assertRaisesRegex(ValueError, "Refresh"):
                 load_paper_results(old)
+
+
+class CorrectedReplaySelectionTests(unittest.TestCase):
+    """Episodes 2-21 read the BT-corrected sheets, the audited attempt, and never the historical ones."""
+
+    NAME = "Task_episode_2_of_21_run"
+
+    def make_episode(self, root):
+        ep = root / self.NAME
+        ep.mkdir()
+        (ep / "episode_summary.json").write_text(json.dumps({"steps_executed": 10, "outer_step_seconds": 0.4}))
+        (ep / "bt.json").write_text(json.dumps({"root": {"type": "sequence", "children": [
+            {"id": "node_action_ready", "type": "action",
+             "action": {"description": "Ready", "success_criteria": "Ready state"}},
+            {"id": "node_action_move", "type": "action",
+             "action": {"description": "Move", "success_criteria": "Moved"}},
+        ]}}))
+        (ep / "states_per_frame.jsonl").write_text('{"success":true}\n')
+        workbook = Workbook()
+        workbook.active.title = "Sheet1_BT_Node_Review"
+        workbook.active.append(["node_order", "node_id", "reviewer_completion_time_m:ss"])
+        workbook.active.append([1, "node_action_ready", "0:01"])
+        workbook.active.append([2, "node_action_move", None])
+        header = ["milestone_idx", "node_id", "source", "status_eval_id", "model_status", "video_time_m:ss", "machine_frame"]
+        for title, rows in (
+            ("Sheet2_MissionEngine_Review", [[1, "node_action_stale", "mission_engine_response", "old", "complete", "0:01", "frame_00000"]]),
+            ("qwen3_v1_BTfix", [[1, "node_action_ready", "mission_engine_response", "r1", "complete", "", "frame_00000"]]),
+            ("qwen35_mod1_v1_BTfix", [[1, "node_action_move", "mission_engine_response", "r1", "complete", "0:02", "frame_00001"]]),
+        ):
+            workbook.create_sheet(title).append(header)
+            for row in rows:
+                workbook[title].append(row)
+        workbook.save(ep / "human_rater_evaluation.xlsx")
+        workbook.close()
+        for attempt, sheet in (("qwen3_v1_BTfix_old", "qwen3_v1_BTfix"), ("qwen3_v1_BTfix_new", "qwen3_v1_BTfix"),
+                               ("qwen35_mod1_v1_BTfix_a", "qwen35_mod1_v1_BTfix")):
+            (ep / attempt).mkdir()
+            (ep / attempt / "replay_config.json").write_text(json.dumps({"review_sheet_name": sheet}))
+        schedule = root / "schedule.xlsx"
+        workbook = Workbook()
+        workbook.active.title = "human_eval_schedule"
+        workbook.active.append(["scenario_id", "run_tag", "episode_index", "episode_dir", "complete"])
+        workbook.active.append(["Task", "run", 2, self.NAME, False])
+        workbook.save(schedule)
+        workbook.close()
+        return schedule
+
+    def write_ledger(self, root, qwen3_responses=1):
+        path = root / "ledger.csv"
+        book = load_workbook(root / self.NAME / "human_rater_evaluation.xlsx", read_only=True, data_only=True)
+        try:
+            digest = {name: dataset.response_fingerprint(book[name]) for name in ("qwen3_v1_BTfix", "qwen35_mod1_v1_BTfix")}
+        finally:
+            book.close()
+        pd.DataFrame([
+            {"episode": self.NAME, "model": "qwen3", "sheet": "qwen3_v1_BTfix", "n_responses": qwen3_responses,
+             "response_sha256": digest["qwen3_v1_BTfix"],
+             "matched_output": "qwen3_v1_BTfix_new", "disposition": "verified_primary"},
+            {"episode": self.NAME, "model": "qwen35", "sheet": "qwen35_mod1_v1_BTfix", "n_responses": 1,
+             "response_sha256": digest["qwen35_mod1_v1_BTfix"],
+             "matched_output": "qwen35_mod1_v1_BTfix_a", "disposition": "verified_primary"},
+            {"episode": self.NAME, "model": "qwen35_qwen3_prompt", "sheet": "", "n_responses": 0,
+             "response_sha256": "",
+             "matched_output": "qwen_3_5_x", "disposition": "historical_only_pre_regeneration"},
+        ]).to_csv(path, index=False)
+        return path
+
+    def test_corrected_sheets_audited_attempt_and_untimed_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            schedule = self.make_episode(root)
+            ledger = self.write_ledger(root)
+            episodes, observations = dataset.build_btaudit2_visualization_dataset(
+                logs_dir=root, schedule_path=schedule, run_ledger_path=ledger,
+            )
+            row = episodes.iloc[0]
+            self.assertEqual(row["qwen3_review_sheet"], "qwen3_v1_BTfix")
+            self.assertEqual(row["qwen35_review_sheet"], "qwen35_mod1_v1_BTfix")
+            self.assertNotIn("node_action_stale", observations["node_id"].tolist())
+            self.assertEqual((row["qwen3_selected_attempt"], row["qwen3_run_disposition"]),
+                             ("qwen3_v1_BTfix_new", "verified_primary"))
+            self.assertTrue(row["qwen3_bt_aligned"])
+            self.assertTrue(pd.isna(row["qwen38_bt_aligned"]))
+            attempts = [(a["model_key"], a["attempt"]) for a in json.loads(row["replay_provenance_json"])]
+            self.assertEqual(sorted(attempts), [("qwen3", "qwen3_v1_BTfix_new"), ("qwen35", "qwen35_mod1_v1_BTfix_a")])
+            self.assertEqual(row["bt_action_nodes"], 2)
+            self.assertTrue(pd.isna(row["node_3_node_id"]) or row["node_3_node_id"] == "")
+            self.assertFalse(any(column.startswith("node_1_qwen3_5") for column in episodes))
+            self.assertNotIn("qwen3_review_available", episodes)
+            qwen3 = observations[observations["model_name"].eq("qwen3")].iloc[0]
+            self.assertEqual((qwen3["node_position"], qwen3["model_node_count"]), (1, 2))
+            self.assertEqual(qwen3["node_position_basis"], "saved_BT_ID_binding")
+            self.assertEqual(qwen3["timing_basis"], "unavailable_video_duration")
+            self.assertEqual(row["qwen3_complete_rows"], 1)
+            self.assertEqual(row["node_1_qwen3_last_status"], "complete")
+            self.assertEqual(row["node_1_qwen3_model_completion_time"], "")
+
+            def reject(constant):
+                raise ValueError(constant)
+
+            json.loads(row["qwen3_model_notes_by_video_time_json"], parse_constant=reject)
+            json.loads(row["node_1_qwen3_model_notes_by_video_time_json"], parse_constant=reject)
+
+    def test_workbook_that_drifts_from_the_audited_run_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            schedule = self.make_episode(root)
+            with self.assertRaisesRegex(ValueError, "responses differ from ledger"):
+                dataset.build_btaudit2_visualization_dataset(
+                    logs_dir=root, schedule_path=schedule, run_ledger_path=self.write_ledger(root, qwen3_responses=2),
+                )
+
+    def test_edited_responses_with_unchanged_counts_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            schedule = self.make_episode(root)
+            ledger = self.write_ledger(root)
+            workbook_path = root / self.NAME / "human_rater_evaluation.xlsx"
+            workbook = load_workbook(workbook_path)
+            workbook["qwen3_v1_BTfix"]["E2"] = "incomplete"
+            workbook.save(workbook_path)
+            workbook.close()
+            with self.assertRaisesRegex(ValueError, "sheet responses differ from the audited run"):
+                dataset.build_btaudit2_visualization_dataset(
+                    logs_dir=root, schedule_path=schedule, run_ledger_path=ledger,
+                )
+
+    def test_sheet_selection_has_no_fallback_for_evaluation_episodes(self):
+        spec = dataset.MODEL_SPECS[0]
+        names = ["Sheet2_MissionEngine_Review", "qwen3_v1_BTfix", "qwen3_v1_BTfix_backup"]
+        self.assertEqual(dataset._select_model_sheet(names, spec, 7), "qwen3_v1_BTfix")
+        self.assertIsNone(dataset._select_model_sheet(names[:1] + names[2:], spec, 7))
+        self.assertEqual(dataset._select_model_sheet(names, spec, 1), "Sheet2_MissionEngine_Review")
+        self.assertEqual(dataset._select_model_sheet(names, spec), "Sheet2_MissionEngine_Review")
+
+    def test_only_evaluation_episodes_must_have_every_model_and_slots_follow_required_nodes(self):
+        columns = {f"{spec.prefix}_sheet_present": [True, False] for spec in dataset.ALL_MODEL_SPECS}
+        missing = dataset._missing_required_models(pd.DataFrame({"episode_index": [1, 2], **columns}))
+        self.assertEqual(missing, {spec.model_name: 1 for spec in dataset.ALL_MODEL_SPECS})
+        ids = ["node_action_a", "node_action_b", "node_action_stale", "node_action_old"]
+        record = {"required_nodes_json": json.dumps([{"node_id": "node_action_a"}, {"node_id": "node_action_b"}]),
+                  "bt_action_nodes": 4, **{f"node_{slot}_node_id": ids[slot - 1] for slot in range(1, 5)}}
+        dataset._restrict_slots_to_required_nodes(record)
+        self.assertEqual([record[f"node_{slot}_node_id"] for slot in range(1, 5)], ids[:2] + ["", ""])
+        self.assertEqual(record["bt_action_nodes"], 2)
+        mixed = {
+            "required_nodes_json": json.dumps([{"node_id": "node_action_a"}, {"node_id": "node_condition_b"}]),
+            "node_1_node_id": "node_action_a", "node_2_node_id": "node_condition_b",
+            "node_3_node_id": "node_condition_stale",
+            "node_2_reviewer_notes": "note", "node_3_reviewer_notes": "stale note",
+        }
+        dataset._restrict_slots_to_required_nodes(mixed)
+        self.assertEqual(
+            (mixed["bt_action_nodes"], mixed["node_2_node_id"], mixed["node_2_reviewer_notes"],
+             mixed["node_3_node_id"], mixed["node_3_reviewer_notes"]),
+            (1, "node_condition_b", "note", "", ""),
+        )
 
 
 if __name__ == "__main__":

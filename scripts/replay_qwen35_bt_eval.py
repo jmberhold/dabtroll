@@ -238,6 +238,9 @@ def _backfill_sheet2_video_times(
     outer_step_seconds: float,
     video_time_scale: Optional[float],
 ) -> int:
+    if video_time_scale is None:
+        return 0
+
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -267,10 +270,7 @@ def _backfill_sheet2_video_times(
         if machine_seconds is None:
             continue
 
-        if video_time_scale is None:
-            video_seconds = machine_seconds
-        else:
-            video_seconds = machine_seconds * float(video_time_scale)
+        video_seconds = machine_seconds * float(video_time_scale)
 
         ws.cell(row=r, column=9, value=_fmt_mmss_from_seconds(video_seconds))
         filled += 1
@@ -493,11 +493,9 @@ def _build_mission_milestones(
     milestones: List[Dict[str, Any]] = []
 
     def _video_time_from_step(step: Optional[int]) -> str:
-        if step is None:
+        if step is None or video_time_scale is None:
             return ""
         machine_seconds = max(0.0, float(step) * float(outer_step_seconds))
-        if video_time_scale is None:
-            return _fmt_mmss_from_seconds(machine_seconds)
         return _fmt_mmss_from_seconds(machine_seconds * float(video_time_scale))
 
     for row in mission_rows:
@@ -845,12 +843,7 @@ def _replay_episode(
     video_path = _find_primary_video_path(episode_dir)
     video_duration_seconds = _safe_video_duration_seconds(video_path) if video_path is not None else None
     video_time_scale = None
-    if video_path is not None:
-        if video_duration_seconds is None or not math.isfinite(video_duration_seconds) or video_duration_seconds <= 0:
-            raise ValueError(
-                f"Cannot measure saved video duration: {video_path}. Install OpenCV or PyAV "
-                "in the replay environment before inference; simulation seconds must not be labeled video time."
-            )
+    if video_duration_seconds is not None and math.isfinite(video_duration_seconds) and video_duration_seconds > 0:
         if machine_duration_seconds <= 0:
             raise ValueError(f"Cannot calibrate video time with nonpositive simulation duration: {episode_dir}")
         video_time_scale = video_duration_seconds / machine_duration_seconds
@@ -931,6 +924,11 @@ def _replay_episode(
             "video_duration_seconds": video_duration_seconds,
             "simulation_duration_seconds": machine_duration_seconds,
             "simulation_to_video_scale": video_time_scale,
+            "video_time_unavailable_reason": (
+                "video_missing" if video_path is None
+                else "video_duration_unavailable" if video_time_scale is None
+                else None
+            ),
         },
         "timing": {
             "clock": "simulation",

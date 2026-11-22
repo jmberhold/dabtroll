@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from audit_btaudit2_dataset import REQUIRED_FILES, audit_dataset, file_sha256
+import audit_btaudit2_selected_runs as audit_selected_runs
 import build_btaudit2_visualization_dataset as visualization
 
 
@@ -206,6 +207,45 @@ class DatasetAuditTests(unittest.TestCase):
                 episode_csv_path=episode_csv, observation_csv_path=observation_csv,
             )
             self.assertEqual(build.call_count, 3)
+
+    def test_cache_is_rebuilt_when_the_selected_run_ledger_changes(self):
+        episode_csv, observation_csv = self.root / "rows.csv", self.root / "observations.csv"
+        ledger = self.root / "ledger.csv"
+        ledger.write_text("episode,model\na,qwen3\n")
+        fresh = pd.DataFrame([{
+            **{column: "[]" for column in visualization.CURRENT_SCHEMA_COLUMNS},
+            "visualization_schema_version": visualization.SCHEMA_VERSION,
+            "episode_dir": self.episode.name,
+        }])
+        load = lambda: visualization.load_or_build_btaudit2_visualization_dataset(  # noqa: E731
+            episode_csv_path=episode_csv, observation_csv_path=observation_csv, run_ledger_path=ledger,
+        )
+        with patch.object(visualization, "build_btaudit2_visualization_dataset", return_value=(
+            fresh, pd.DataFrame([{"model_name": "qwen38"}]),
+        )) as build:
+            self.assertEqual(load()[0].attrs["cache_status"], "built")
+            self.assertEqual(load()[0].attrs["cache_status"], "loaded")
+            ledger.write_text("episode,model\na,qwen35\n")
+            self.assertEqual(load()[0].attrs["cache_status"], "built")
+            self.assertEqual(load()[0].attrs["cache_status"], "loaded")
+            Path(str(episode_csv) + visualization.CACHE_STAMP_SUFFIX).unlink()
+            self.assertEqual(load()[0].attrs["cache_status"], "built")
+            self.assertEqual(build.call_count, 3)
+
+    def test_historical_configuration_is_only_trusted_after_verification(self):
+        verified = {
+            "after_regen": "True", "matching_attempts": 1, "pairs_ok": "True",
+            "quality": "clean_mission_responses", "regen_ok": True, "prompt_node_text": "match",
+            "prompt_hash_ok": "legacy",
+        }
+        historical = audit_selected_runs.HISTORICAL_CONFIGURATION_MODEL
+        self.assertEqual(audit_selected_runs.disposition(verified, historical),
+                         "historical_configuration_not_prompt_only")
+        self.assertEqual(audit_selected_runs.disposition({**verified, "prompt_node_text": "check_text"}, historical),
+                         "needs_review")
+        self.assertEqual(audit_selected_runs.disposition(verified, "qwen3"), "verified_primary")
+        self.assertEqual(audit_selected_runs.disposition({**verified, "after_regen": "False"}, historical),
+                         "historical_only_pre_regeneration")
 
 
 if __name__ == "__main__":

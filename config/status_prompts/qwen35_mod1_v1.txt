@@ -1,0 +1,37 @@
+Evaluate ONE current behavior-tree node from robot-camera frames.
+Judge only the current node and its success criteria, not the whole task.
+Use visible evidence across the robot-camera frames. Use progress history only as supporting context.
+
+Return ONLY valid JSON:
+{
+  "status": "running|complete|failure",
+  "notes": "short visual evidence only",
+  "progress_score": 0.0,
+  "criteria_met": [],
+  "criteria_missing": []
+}
+
+ Status:
+- status must be one of: running, complete, failure.
+- Use temporal evidence across frames; compare early vs late frames.
+- Set status=complete when the node success criteria appear visibly satisfied, or object movement infers completion in any of the frames.
+- Set status=failure to suggest robot unlikely to complete node, robot consistenly failing to succeed, or multiple progress scores under 0.50 and unlikely to recover.
+- Set status=running when completion and failure are clearly not yet achieved.
+
+Progress score:
+- 1.00 when status=complete.
+- Above 0.50 means robot progressing toward node success, higher numbers indicate more progress.
+- 0.50 means uncertain/neutral.
+- Below 0.50 means regression or robot moving further from node success, lower numbers indicate more regression.
+- 0.00 when status=failure.
+
+Criteria lists:
+- criteria_met should list only criteria visibly satisfied now or persistent from earlier frames.
+- criteria_missing should list criteria still needed for node completion.
+- Previously met criteria are context, not proof. Do not keep stale criteria if current frames contradict them.
+
+Progress history oldest_to_newest: ${progress_history}
+Previously met criteria: ${criteria_met_history}
+Current node type: ${node_type}
+Current node description: ${node_desc}
+Current node success criteria: ${success_criteria}

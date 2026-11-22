@@ -103,8 +103,13 @@ def _bindings(contract: dict) -> dict[str, int]:
     return bindings
 
 
-def reconcile_positions(reference: list[dict], historical: dict, records: list[dict], model: str) -> dict:
-    """Bind recorded IDs to ordinal slots; never infer full BT size from reached nodes."""
+def reconcile_positions(reference: list[dict], historical: dict, records: list[dict], model: str,
+                        current_only: bool = False) -> dict:
+    """Bind recorded IDs to ordinal slots; never infer full BT size from reached nodes.
+
+    ``current_only`` is for runs verified against the saved episode tree: the historical
+    contract and its prefix-order inference are never consulted for them.
+    """
     current = {"nodes": reference, "basis": "saved_BT_ID_binding"}
     responses = [row for row in records if row.get("source") != "btstatus_complete_milestone"]
     identifiers = list(dict.fromkeys(
@@ -114,7 +119,7 @@ def reconcile_positions(reference: list[dict], historical: dict, records: list[d
     if not identifiers or "" in identifiers:
         return {"nodes": [], "bindings": {}, "node_count": None, "basis": "no_identified_responses"}
     candidates = [historical, current] if model == "qwen3" else [current, historical]
-    if model not in {"qwen3", "qwen35", "qwen35_qwen3_prompt"}:
+    if current_only or model not in {"qwen3", "qwen35", "qwen35_qwen3_prompt"}:
         candidates = [current]
     for candidate in candidates:
         if not candidate.get("nodes"):
@@ -123,7 +128,7 @@ def reconcile_positions(reference: list[dict], historical: dict, records: list[d
         if all(_key(identifier) in bindings for identifier in identifiers):
             return {**candidate, "node_count": len(candidate["nodes"]),
                     "bindings": {identifier: bindings[_key(identifier)] for identifier in identifiers}}
-    if model == "qwen3" and historical.get("nodes"):
+    if model == "qwen3" and not current_only and historical.get("nodes"):
         bindings = _bindings(historical)
         first = min(responses, key=lambda row: row.get("review_row", 0))
         frame = re.search(r"(\d+)(?:\.\w+)?$", str(first.get("machine_frame", "")))
