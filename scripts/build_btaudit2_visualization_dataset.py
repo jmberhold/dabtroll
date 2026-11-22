@@ -38,7 +38,18 @@ DEFAULT_EPISODE_CSV_PATH = DEFAULT_LOGS_DIR / "btaudit2_all_episodes_visualizati
 DEFAULT_OBSERVATION_CSV_PATH = DEFAULT_LOGS_DIR / "btaudit2_all_episodes_visualization_observations.csv"
 DEFAULT_EVALUATION_EPISODE_CSV_PATH = DEFAULT_LOGS_DIR / "btaudit2_episodes_2_21_visualization_rows.csv"
 DEFAULT_EVALUATION_OBSERVATION_CSV_PATH = DEFAULT_LOGS_DIR / "btaudit2_episodes_2_21_visualization_observations.csv"
-SCHEMA_VERSION = 5
+DEFAULT_RUN_LEDGER_PATH = PROJECT_ROOT / "config" / "datasets" / "btaudit2_20261021_selected_runs.csv"
+SCHEMA_VERSION = 6
+EVALUATION_FIRST_EPISODE = 2
+BT_ALIGNED_DISPOSITIONS = frozenset({"verified_primary", "historical_configuration_not_prompt_only"})
+LEDGER_COLUMNS = frozenset({"episode", "model", "sheet", "n_responses", "matched_output", "disposition"})
+RUN_FIELDS = ("selected_attempt", "run_disposition", "bt_aligned")
+# Columns the shared row builder derives from the historical Sheet2-Sheet4 review sheets.
+LEGACY_BASE_FIELD = re.compile(
+    r"^node_\d+_(?:model_completion_time|model_failure_time|reviewer_failure_time|reviewer_agree|qwen3_5_.+)$"
+)
+LEGACY_BASE_COLUMNS = frozenset({"qwen3_review_available", "qwen35_review_available"})
+SLOT_FIELDS = ("node_id", "Node_description", "success_criteria", "reviewer_completion_time", "reviewer_notes")
 
 
 @dataclass(frozen=True)
@@ -48,12 +59,14 @@ class ModelSpec:
     sheet_number: int
     required_tokens: tuple[str, ...]
     sheet_name: str | None = None
+    # Sheet replayed on each episode's own saved BT; it replaces the numbered sheet for episodes 2-21.
+    evaluation_sheet_name: str | None = None
 
 
 MODEL_SPECS = (
-    ModelSpec("qwen3", "qwen3", 2, ()),
+    ModelSpec("qwen3", "qwen3", 2, (), evaluation_sheet_name="qwen3_v1_BTfix"),
     ModelSpec("qwen35_qwen3_prompt", "qwen35_qwen3_prompt", 3, ("qwen3_5",)),
-    ModelSpec("qwen35", "qwen35", 4, ("qwen3_5",)),
+    ModelSpec("qwen35", "qwen35", 4, ("qwen3_5",), evaluation_sheet_name="qwen35_mod1_v1_BTfix"),
     ModelSpec("molmo2", "molmo2", 5, ("molmo2",)),
     ModelSpec("gemma4", "gemma4", 6, ("gemma4",)),
 )
@@ -66,6 +79,7 @@ CURRENT_SCHEMA_COLUMNS = {
     "reviewer_progress_points_json", "episode_success_time", "sim_success_final",
     "luna6_time_calibration_json",
     *(f"{spec.prefix}_observations_json" for spec in ALL_MODEL_SPECS),
+    *(f"{spec.prefix}_{field}" for spec in ALL_MODEL_SPECS for field in RUN_FIELDS),
 }
 
 
@@ -176,7 +190,18 @@ def _read_episode_success_metadata(episode_path: Path) -> dict[str, object]:
     }
 
 
-def _select_model_sheet(sheet_names: list[str], spec: ModelSpec) -> str | None:
+def _uses_evaluation_sheet(spec: ModelSpec, episode_index: int | None) -> bool:
+    return (
+        spec.evaluation_sheet_name is not None
+        and episode_index is not None
+        and episode_index >= EVALUATION_FIRST_EPISODE
+    )
+
+
+def _select_model_sheet(sheet_names: list[str], spec: ModelSpec, episode_index: int | None = None) -> str | None:
+    if _uses_evaluation_sheet(spec, episode_index):
+        target = _normalized_name(spec.evaluation_sheet_name)
+        return next((name for name in sheet_names if _normalized_name(name) == target), None)
     if spec.sheet_number == 0:
         return next((name for name in sheet_names if _normalized_name(name) == spec.sheet_name), None)
     sheet_token = f"sheet{spec.sheet_number}"
@@ -200,13 +225,17 @@ def _select_model_sheet(sheet_names: list[str], spec: ModelSpec) -> str | None:
     return max(candidates)[2]
 
 
-def _read_model_sheet(workbook_path: Path, spec: ModelSpec) -> tuple[pd.DataFrame, str]:
+def _read_model_sheet(
+    workbook_path: Path, spec: ModelSpec, episode_index: int | None = None,
+) -> tuple[pd.DataFrame, str]:
     with pd.ExcelFile(workbook_path) as excel:
-        return _read_model_sheet_from_excel(excel, spec)
+        return _read_model_sheet_from_excel(excel, spec, episode_index)
 
 
-def _read_model_sheet_from_excel(excel: pd.ExcelFile, spec: ModelSpec) -> tuple[pd.DataFrame, str]:
-    sheet_name = _select_model_sheet(excel.sheet_names, spec)
+def _read_model_sheet_from_excel(
+    excel: pd.ExcelFile, spec: ModelSpec, episode_index: int | None = None,
+) -> tuple[pd.DataFrame, str]:
+    sheet_name = _select_model_sheet(excel.sheet_names, spec, episode_index)
     if sheet_name is None:
         return pd.DataFrame(), ""
 
@@ -266,7 +295,7 @@ def _standardize_observations(
     out["video_time_s"] = out["video_time_m:ss"].map(nqcu._to_seconds_mmss)
     out["stored_video_time_m:ss"] = out["video_time_m:ss"]
     out["stored_video_time_s"] = out["video_time_s"]
-    out["timing_basis"] = "stored_source_sheet"
+    out["timing_basis"] = np.where(out["video_time_s"].isna(), "unavailable_video_duration", "stored_source_sheet")
     out["model_status_norm"] = out["model_status"].map(nqcu._norm_status)
     out["model_progress"] = pd.to_numeric(out["model_progress"], errors="coerce")
     out["model_latency_s"] = pd.to_numeric(out["model_latency_s"], errors="coerce")
@@ -351,6 +380,9 @@ def _initialize_model_fields(record: dict[str, object], spec: ModelSpec) -> None
             f"{prefix}_final_sheet_sim_success": np.nan,
             f"{prefix}_model_notes_by_video_time_json": "[]",
             f"{prefix}_observations_json": "[]",
+            f"{prefix}_selected_attempt": "",
+            f"{prefix}_run_disposition": "",
+            f"{prefix}_bt_aligned": np.nan,
         }
     )
     for slot in range(1, 5):
@@ -369,8 +401,48 @@ def _initialize_model_fields(record: dict[str, object], spec: ModelSpec) -> None
         )
 
 
-def _read_result_metadata(episode_path: Path) -> dict[str, object]:
-    """Persist supporting evidence once so notebooks need only the datasheet."""
+def _read_run_ledger(path: Path | str | None) -> dict[str, dict[str, dict[str, str]]]:
+    """Index the audited selected runs as ``{episode: {model_key: row}}``."""
+    if path is None:
+        return {}
+    path = Path(path).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"Selected-run ledger not found: {path}")
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    missing = LEDGER_COLUMNS - set(frame.columns)
+    if missing:
+        raise ValueError(f"Selected-run ledger is missing columns: {sorted(missing)}")
+    if frame.duplicated(["episode", "model"]).any():
+        raise ValueError(f"Selected-run ledger repeats an episode-model pair: {path}")
+    ledger: dict[str, dict[str, dict[str, str]]] = {}
+    for row in frame.to_dict("records"):
+        ledger.setdefault(row["episode"], {})[row["model"]] = row
+    return ledger
+
+
+def _check_selected_run(
+    episode: str, spec: ModelSpec, selected: dict[str, str], sheet_name: str, observations: pd.DataFrame,
+) -> None:
+    """Fail when the workbook no longer matches the audited run for this episode and model."""
+    attempt = selected["matched_output"]
+    if not attempt or "|" in attempt:
+        raise ValueError(f"{episode}/{spec.model_name}: ledger must name exactly one source attempt")
+    if sheet_name != selected["sheet"]:
+        raise ValueError(f"{episode}/{spec.model_name}: sheet {sheet_name!r} differs from ledger {selected['sheet']!r}")
+    responses = int(observations["source"].eq("mission_engine_response").sum()) if len(observations) else 0
+    if responses != int(selected["n_responses"]):
+        raise ValueError(
+            f"{episode}/{spec.model_name}: {responses} responses differ from ledger {selected['n_responses']}"
+        )
+
+
+def _read_result_metadata(
+    episode_path: Path, selected_runs: dict[str, dict[str, str]] | None = None,
+) -> dict[str, object]:
+    """Persist supporting evidence once so notebooks need only the datasheet.
+
+    ``selected_runs`` restricts replay provenance to the audited attempt of each model.
+    """
     summary = json.loads((episode_path / "episode_summary.json").read_text())
     tree = json.loads((episode_path / "bt.json").read_text())
     human = nqcu._read_reviewer_sheet_schema_aware(episode_path / "human_rater_evaluation.xlsx")
@@ -426,11 +498,19 @@ def _read_result_metadata(episode_path: Path) -> dict[str, object]:
     for node in required:
         node.pop("human_order")
     provenance = []
-    model_names = {spec.sheet_name or spec.model_name: spec.model_name for spec in ALL_MODEL_SPECS}
+    model_names = {
+        name: spec.model_name
+        for spec in ALL_MODEL_SPECS
+        for name in (spec.sheet_name or spec.model_name, spec.evaluation_sheet_name)
+        if name
+    }
     for config_path in sorted(episode_path.glob("*/replay_config.json")):
         config = json.loads(config_path.read_text())
         sheet = config.get("review_sheet_name", "")
         if sheet not in model_names:
+            continue
+        selected = (selected_runs or {}).get(model_names[sheet])
+        if selected is not None and config_path.parent.name != selected["matched_output"]:
             continue
         snapshot = config_path.parent / "status_prompt_source.txt"
         health = config.get("server_health", {})
@@ -470,7 +550,15 @@ def build_btaudit2_visualization_dataset(
     episode_index_min: int | None = None,
     episode_index_max: int | None = None,
     require_all_models: bool = False,
+    run_ledger_path: Path | str | None = DEFAULT_RUN_LEDGER_PATH,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build the episode and observation tables.
+
+    Episodes 2-21 read the BT-corrected replay sheets of ``MODEL_SPECS`` with no fallback
+    to the historical sheets. ``require_all_models`` demands every model for those episodes;
+    ``run_ledger_path`` supplies and cross-checks the audited source attempt of each run.
+    """
+    run_ledger = _read_run_ledger(run_ledger_path)
     schedule_path = Path(schedule_path).expanduser().resolve()
     logs_dir = Path(logs_dir).expanduser().resolve()
     schedule = _read_schedule(schedule_path)
@@ -513,8 +601,13 @@ def build_btaudit2_visualization_dataset(
         base_frame = base_builder.build_episode_row(episode_path, workbook_path)
         if base_frame.empty:
             raise ValueError(f"Could not build episode metadata for {episode_path}")
-        record = base_frame.iloc[0].to_dict()
-        record.update(_read_result_metadata(episode_path))
+        record = {
+            key: value for key, value in base_frame.iloc[0].to_dict().items()
+            if key not in LEGACY_BASE_COLUMNS and not LEGACY_BASE_FIELD.match(key)
+        }
+        selected_runs = run_ledger.get(episode_path.name, {})
+        record.update(_read_result_metadata(episode_path, selected_runs))
+        _restrict_slots_to_required_nodes(record)
         success_metadata = _read_episode_success_metadata(episode_path)
         sim_success_final = success_metadata["sim_success_final"]
         sim_success_ever = success_metadata["sim_success_episode"]
@@ -570,10 +663,14 @@ def build_btaudit2_visualization_dataset(
         reference_nodes = ordered_nodes(json.loads((episode_path / "bt.json").read_text()))
         historical = original_contract(episode_path, contract_cache)
         contracts = {}
+        episode_index = int(record["episode_index"])
+        provenance_attempts = {}
+        for attempt in json.loads(record["replay_provenance_json"]):
+            provenance_attempts.setdefault(attempt["model_key"], set()).add(attempt["attempt"])
         with pd.ExcelFile(workbook_path) as excel:
             for spec in ALL_MODEL_SPECS:
                 _initialize_model_fields(record, spec)
-                raw_model, sheet_name = _read_model_sheet_from_excel(excel, spec)
+                raw_model, sheet_name = _read_model_sheet_from_excel(excel, spec, episode_index)
                 record[f"{spec.prefix}_sheet_present"] = bool(sheet_name and not raw_model.empty)
                 record[f"{spec.prefix}_review_sheet"] = sheet_name
                 observations = _standardize_observations(
@@ -582,12 +679,23 @@ def build_btaudit2_visualization_dataset(
                     spec,
                     observation_metadata,
                 )
+                selected = selected_runs.get(spec.model_name)
+                if selected is not None:
+                    _check_selected_run(episode_path.name, spec, selected, sheet_name, observations)
+                    if spec.model_name in provenance_attempts and provenance_attempts[spec.model_name] != {
+                        selected["matched_output"]
+                    }:
+                        raise ValueError(f"{episode_path.name}/{spec.model_name}: provenance does not name the ledger attempt")
+                    record[f"{spec.prefix}_selected_attempt"] = selected["matched_output"]
+                    record[f"{spec.prefix}_run_disposition"] = selected["disposition"]
+                    record[f"{spec.prefix}_bt_aligned"] = selected["disposition"] in BT_ALIGNED_DISPOSITIONS
                 if observations.empty:
                     contracts[spec.model_name] = {"node_count": None, "basis": "model_unavailable",
                                                   "nodes": [], "bindings": {}}
                     continue
                 contract = reconcile_positions(
                     reference_nodes, historical, observations.to_dict("records"), spec.model_name,
+                    current_only=_uses_evaluation_sheet(spec, episode_index),
                 )
                 contracts[spec.model_name] = contract
                 identifiers = observations["node_id"].where(
@@ -631,18 +739,45 @@ def build_btaudit2_visualization_dataset(
     if int(episodes["human_reviewed"].sum()) != len(selected_schedule):
         raise ValueError("human_reviewed must be true only for schedule-listed episodes")
     if require_all_models:
-        missing_by_model = {
-            spec.model_name: int((~episodes[f"{spec.prefix}_sheet_present"]).sum())
-            for spec in MODEL_SPECS
-        }
-        missing_by_model = {
-            model_name: missing_count
-            for model_name, missing_count in missing_by_model.items()
-            if missing_count
-        }
+        missing_by_model = _missing_required_models(episodes)
         if missing_by_model:
             raise ValueError(f"Episodes are missing required model sheets: {missing_by_model}")
+        if run_ledger:
+            unaudited = sorted(
+                name for name, index in zip(episodes["episode_dir"], episodes["episode_index"])
+                if index >= EVALUATION_FIRST_EPISODE
+                and {spec.model_name for spec in ALL_MODEL_SPECS} != set(run_ledger.get(name, {}))
+            )
+            if unaudited:
+                raise ValueError(f"{len(unaudited)} episodes lack a complete selected-run ledger: {unaudited[:3]}")
     return episodes, observations
+
+
+def _missing_required_models(episodes: pd.DataFrame) -> dict[str, int]:
+    """Count evaluation episodes (2-21) lacking each model; episode 1 is development material."""
+    evaluation = pd.to_numeric(episodes["episode_index"]).ge(EVALUATION_FIRST_EPISODE)
+    missing = {}
+    for spec in ALL_MODEL_SPECS:
+        present = episodes[f"{spec.prefix}_sheet_present"].astype(str).str.lower().eq("true")
+        count = int((evaluation & ~present).sum())
+        if count:
+            missing[spec.model_name] = count
+    return missing
+
+
+def _restrict_slots_to_required_nodes(record: dict[str, object]) -> None:
+    """Blank node slots the shared row builder filled from historical model sheets."""
+    required = {
+        nqcu._canonical_action_node_id(node["node_id"]) for node in json.loads(record["required_nodes_json"])
+    } - {""}
+    record["bt_action_nodes"] = len(required)
+    for slot in range(1, 5):
+        slot_node = nqcu._canonical_action_node_id(record.get(f"node_{slot}_node_id", ""))
+        if slot_node in required:
+            continue
+        for field in SLOT_FIELDS:
+            if f"node_{slot}_{field}" in record:
+                record[f"node_{slot}_{field}"] = ""
 
 
 def load_or_build_btaudit2_visualization_dataset(
@@ -654,6 +789,7 @@ def load_or_build_btaudit2_visualization_dataset(
     episode_index_min: int | None = None,
     episode_index_max: int | None = None,
     require_all_models: bool = False,
+    run_ledger_path: Path | str | None = DEFAULT_RUN_LEDGER_PATH,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     episode_csv_path = Path(episode_csv_path).expanduser().resolve()
     observation_csv_path = Path(observation_csv_path).expanduser().resolve()
@@ -676,6 +812,7 @@ def load_or_build_btaudit2_visualization_dataset(
             episode_index_min=episode_index_min,
             episode_index_max=episode_index_max,
             require_all_models=require_all_models,
+            run_ledger_path=run_ledger_path,
         )
         episode_csv_path.parent.mkdir(parents=True, exist_ok=True)
         observation_csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -685,17 +822,7 @@ def load_or_build_btaudit2_visualization_dataset(
     episodes = pd.read_csv(episode_csv_path, low_memory=False)
     observations = pd.read_csv(observation_csv_path, low_memory=False)
     if require_all_models:
-        missing_by_model = {
-            spec.model_name: int(
-                (~episodes[f"{spec.prefix}_sheet_present"].astype(str).str.lower().eq("true")).sum()
-            )
-            for spec in MODEL_SPECS
-        }
-        missing_by_model = {
-            model_name: missing_count
-            for model_name, missing_count in missing_by_model.items()
-            if missing_count
-        }
+        missing_by_model = _missing_required_models(episodes)
         if missing_by_model:
             raise ValueError(f"Cached episodes are missing required model sheets: {missing_by_model}")
     episodes.attrs.update(
@@ -721,6 +848,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--schedule", type=Path, default=DEFAULT_SCHEDULE_PATH)
     parser.add_argument("--logs-dir", type=Path, default=DEFAULT_LOGS_DIR)
+    parser.add_argument("--output-dir", type=Path, help="Where the CSVs are written; defaults to --logs-dir")
+    parser.add_argument("--run-ledger", type=Path, default=DEFAULT_RUN_LEDGER_PATH)
+    parser.add_argument(
+        "--allow-missing-models", action="store_true",
+        help="Skip the check that every model has a sheet for episodes 2-21",
+    )
     parser.add_argument("--episode-csv", type=Path)
     parser.add_argument("--observation-csv", type=Path)
     parser.add_argument("--episode-index-min", type=int)
@@ -728,25 +861,28 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="Rebuild even when both CSV caches exist")
     args = parser.parse_args()
 
+    output_dir = args.output_dir or args.logs_dir
     evaluation_only = args.episode_index_min == 2 and args.episode_index_max == 21
     episode_name = (DEFAULT_EVALUATION_EPISODE_CSV_PATH if evaluation_only else DEFAULT_EPISODE_CSV_PATH).name
     observation_name = (DEFAULT_EVALUATION_OBSERVATION_CSV_PATH if evaluation_only else DEFAULT_OBSERVATION_CSV_PATH).name
     episodes, observations = load_or_build_btaudit2_visualization_dataset(
         schedule_path=args.schedule,
         logs_dir=args.logs_dir,
-        episode_csv_path=args.episode_csv or args.logs_dir / episode_name,
-        observation_csv_path=args.observation_csv or args.logs_dir / observation_name,
+        episode_csv_path=args.episode_csv or output_dir / episode_name,
+        observation_csv_path=args.observation_csv or output_dir / observation_name,
         force_rebuild=args.force,
         episode_index_min=args.episode_index_min,
         episode_index_max=args.episode_index_max,
+        require_all_models=not args.allow_missing_models,
+        run_ledger_path=args.run_ledger,
     )
     if args.episode_csv is None and args.episode_index_min is None and args.episode_index_max is None:
         evaluation_names = episodes.loc[episodes["episode_index"].between(2, 21), "episode_dir"]
         episodes[episodes["episode_dir"].isin(evaluation_names)].to_csv(
-            args.logs_dir / DEFAULT_EVALUATION_EPISODE_CSV_PATH.name, index=False,
+            output_dir / DEFAULT_EVALUATION_EPISODE_CSV_PATH.name, index=False,
         )
         observations[observations["episode_dir"].isin(evaluation_names)].to_csv(
-            args.logs_dir / DEFAULT_EVALUATION_OBSERVATION_CSV_PATH.name, index=False,
+            output_dir / DEFAULT_EVALUATION_OBSERVATION_CSV_PATH.name, index=False,
         )
     print(
         json.dumps(

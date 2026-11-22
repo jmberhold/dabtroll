@@ -45,41 +45,83 @@ strictly matched-budget five-prompt comparison.
 The October 23 timing audit also found that all 488 local recording summaries
 specified an explicit **eight-frame** window despite a four-second target.
 The saved Qwen3.8 replay configs used that count: normal windows span 2.8
-simulation seconds first-to-last at 0.4 seconds per saved step. Other legacy
-auditor request logs also predominantly contain eight-frame windows. These
-results remain measurements of the historical input condition, not the corrected
-nominal four-second protocol. See the
+simulation seconds first-to-last at 0.4 seconds per saved step. Molmo2, Gemma 4
+and the original-prompt Qwen3.5 sheet also used windows of at most eight frames;
+the corrected Qwen3-VL and Qwen3.5 replays and Luna 6 use ten-frame windows.
+These results remain measurements of their recorded input conditions, not the
+corrected nominal four-second protocol. See the
 [timing contract and correction](status_prompt_experiments.md#timing-contract-and-historical-eight-frame-runs)
 before reproducing or comparing new runs; keep corrected timing separate from
 the immutable snapshot and original model/human sheets.
+
+### One behavior tree per recording
+
+Every recording has its own saved behavior tree (`bt.json`) and its own
+human-reviewed node definitions. Early collection regenerated the BT only once
+every 4-6 episodes, so some early auditor runs were recorded against a BT other
+than the recording's own. Collection later moved to one BT per episode, and the
+two affected auditors were replayed on every evaluation recording so that all
+primary comparisons use each recording's own BT:
+
+| Auditor | Source sheet | Prompt snapshot |
+| --- | --- | --- |
+| Qwen3-VL | `qwen3_v1_BTfix` | [`qwen3_v1`](../config/status_prompts/qwen3_v1.txt) |
+| Qwen3.5 (model-specific prompt) | `qwen35_mod1_v1_BTfix` | [`qwen35_mod1_v1`](../config/status_prompts/qwen35_mod1_v1.txt) |
+
+The corrected replays cover all 464 evaluation recordings (Qwen3-VL: 7,000 clean
+mission responses; Qwen3.5: 8,928), with ten-frame windows. Molmo2, Gemma 4,
+Qwen3.8 and Luna 6 were already recorded against each recording's own BT and are
+unchanged. The earlier Qwen3-VL and Qwen3.5 sheets (`Sheet2`, `Sheet4`) remain in
+the workbooks and release as superseded historical evidence; the visualization
+builder never falls back to them for evaluation episodes.
+
+The [selected-run ledger](../config/datasets/btaudit2_20261021_selected_runs.csv)
+records, for every evaluation episode and model configuration (3,248 rows), the
+selected sheet, the single replay attempt whose responses reproduce it, the
+saved BT hash, whether the run began after the episode's last BT regeneration,
+whether its prompts quote the saved BT's nodes, whether prompt hashes and
+response quality are clean, and unchanged human definitions and values. Rebuild
+it with `python scripts/audit_btaudit2_selected_runs.py`; the visualization
+builder cross-checks sheet, attempt and response count against it. Dispositions:
+
+| Disposition | Rows | Use |
+| --- | ---: | --- |
+| `verified_primary` | 2,784 | All six primary auditors on all 464 evaluation recordings |
+| `historical_configuration_not_prompt_only` | 102 | Qwen3.5 original-prompt sheet on the final BT, but with at most eight frames versus ten for the model-specific prompt |
+| `historical_only_pre_regeneration` | 362 | Qwen3.5 original-prompt sheet recorded before the recording's last BT regeneration; retained as history, excluded from analysis |
+
+Datasheet schema 6 exposes this as `<model>_selected_attempt`,
+`<model>_run_disposition` and `<model>_bt_aligned` for each model key. The paper
+analyses drop only runs whose `bt_aligned` is explicitly false and report the
+counts in the run-alignment table (`d22_run_alignment`). The original-prompt
+Qwen3.5 comparison is a **historical supplement**, not a prompt-only comparison,
+and after exclusion covers 102 recordings (100 Can, 1 Wine, 1 Cuttingboard; 30
+human-reviewed, all Can). A matched-settings original-prompt rerun would be
+needed for a full-corpus prompt comparison.
 
 ## Directory structure and data dictionary
 
 ### Ordinal node comparison
 
-The visualization datasheets (schema 5) preserve source IDs and embed
+The visualization datasheets (schema 6) preserve source IDs and embed
 `model_node_contracts_json`, including each model's full ordered contract,
 ID-to-position bindings, node count, and binding provenance. Paper analysis
-compares **Node 1, Node 2, ...**, not identical ID strings or semantically
-equivalent BTs. Historical BT order is recovered from recorded synthesis
-responses and checked against the recording's BT hash when reused.
+compares **Node 1, Node 2, ...** (the human Sheet1 order), bound by saved BT
+node ID, not identical ID strings across different trees. For every primary run
+the saved BT is the recording's own, so each model's contract has exactly the
+reviewed node count and binding `saved_BT_ID_binding`; the slots
+`node_1_*`..`node_4_*` carry exactly the required nodes and are blank beyond them.
 
-Only shared positions are comparable. Extra reference/model positions do not
-enter false-incomplete/false-complete counts. A genuinely unreached position
-inside a known model contract remains incomplete. Whole-mission agreement
-requires equal full node counts; model-only completion tendencies use the
-model's own full count. Equal counts do **not** establish semantic equivalence.
-Family labels describe the reference position, not necessarily a historical
-model node's action.
-
-Where Qwen3 IDs match neither recorded contract, explicitly authorized inference
-uses first-seen response order only when the first response is at frame zero,
-known position anchors agree, and the full historical node count is available.
-These bindings are labeled `recorded_BT_count_and_observed_prefix_order`, not
-presented as verified historical IDs. Synthetic completion milestones cannot
-choose the contract or supply completion judgments. Unresolved contracts remain
-not comparable. The paper bundle's ordinal-comparability table exposes counts,
-extra positions, and binding provenance for each episode/model.
+The shared-position rules remain as safeguards: extra reference/model positions
+would not enter false-incomplete/false-complete counts, a genuinely unreached
+position inside a known model contract remains incomplete, and whole-mission
+agreement requires equal full node counts. No primary run triggers them. Equal
+counts do **not** establish semantic equivalence of auditor and human wording.
+Synthetic completion milestones cannot choose the contract or supply completion
+judgments. The paper bundle's ordinal-comparability table (`d21_node_positions`)
+exposes counts, extra positions, and binding provenance for each episode/model.
+Historical Sheet3 and episode-1 development rows keep their original binding
+labels (`recorded_original_BT`, `recorded_node_order_unresolved`).
 
 ```text
 data/logs/btaudit2/
@@ -151,9 +193,11 @@ based replay may need a separately versioned rebased manifest.
 - **Sheet1** (`Sheet1_BT_Node_Review`, case-insensitive discovery): ordered human
   BT-node review, completion time/frame, notes and success criteria.
 - **Sheet0** (`sheet0_Progress_Review`, where present): time-sampled human progress.
-- **Sheet2**: original mission-engine review.
-- **Sheet3**: Qwen3.5 with original/Qwen3-style prompt; **Sheet4**: Qwen3.5
-  model-specific prompt variants. Preserve full sheet names; number alone is
+- **Sheet2**: original mission-engine review (Qwen3-VL), superseded for
+  evaluation by **`qwen3_v1_BTfix`**.
+- **Sheet3**: Qwen3.5 with original/Qwen3-style prompt (historical supplement);
+  **Sheet4**: earlier Qwen3.5 model-specific prompt run, superseded by
+  **`qwen35_mod1_v1_BTfix`**. Preserve full sheet names; number alone is
   not a unique experimental condition.
 - **Sheet5**: Molmo2 variants; **Sheet6**: Gemma 4 variants.
 - **`qwen38_v1` ... `qwen38_v5`**: immutable Qwen3.8 prompt revisions.
@@ -242,9 +286,10 @@ for a fourth required node. Timing uses matched human/model completions only,
 with human-only, model-only, and both-complete/missing-time events explicit.
 Zero seconds and exactly +/-2-second boundaries are valid.
 
-The primary evaluation tables include Qwen3-VL (Sheet2), Qwen3.5's
-model-specific prompt (Sheet4), Molmo2, Gemma 4, **Qwen3.8**, and **Luna 6**. Stage 2 also
-includes Qwen3.5's original prompt. Qwen3.8 uses only its selected prompt:
+The primary evaluation tables include Qwen3-VL (`qwen3_v1_BTfix`), Qwen3.5's
+model-specific prompt (`qwen35_mod1_v1_BTfix`), Molmo2, Gemma 4, **Qwen3.8**, and
+**Luna 6**. Stage 2 also includes Qwen3.5's original prompt as a historical
+supplement restricted to runs on the final BT. Qwen3.8 uses only its selected prompt:
 `qwen38_*` and `node_<slot>_qwen38_*` CSV fields are sourced from the historical
 `qwen38_v4` workbook sheet. That sheet name is retained as provenance, not
 shown as a separate performance-model name. Qwen3.8 v1--v5 development
@@ -260,7 +305,7 @@ recordings with 9,469 clean responses; this is coverage, not an accuracy claim.
 Schema v4 includes its observations and cloud model/API/reasoning provenance.
 Luna's full windows contain ten separate images (3.6 seconds first-to-last);
 historical Qwen3.8 uses eight-frame contact sheets (2.8 seconds). Preserve this
-input-setting difference and the source-clock caveats when interpreting results.
+input-setting difference and the clock caveats when interpreting results.
 
 **Luna video-clock calibration:** the original Luna replay environment had
 neither OpenCV nor PyAV, so its workbook `video_time_m:ss` values fell back to
@@ -272,9 +317,12 @@ as saved frame index times measured video duration divided by recorded
 `luna6_time_calibration_json` retains video path, measured duration, sample
 clock, scale and rounding provenance. Missing frame indices fail explicitly.
 Unmeasurable videos emit a warning and receive `unavailable_video_duration`:
-numeric `video_time_s` is missing, while source strings remain for legacy
-completion-presence fields, not valid timing comparisons. Seven evaluation
-videos are unreadable; none belongs to the 120 confirmed reviewed episodes.
+numeric `video_time_s` is missing and no timing is scored. Seven evaluation
+videos are unreadable; none belongs to the 120 confirmed reviewed episodes. The
+same seven recordings have blank video times for the corrected Qwen3-VL and
+Qwen3.5 replays, which write `simulation_no_video` clocks for them; their
+observations carry `timing_basis = unavailable_video_duration` (Molmo2, Gemma 4
+and Qwen3.8 retain stored sheet times for these recordings).
 This is the established duration-ratio convention, not decoded
 per-frame event annotation or an assumption that simulation and playback
 seconds are equal. Source workbooks and completion classifications are unchanged.
@@ -282,22 +330,23 @@ Other auditors retain their source-sheet timing. New replays with a saved video
 fail before inference if its duration cannot be measured; review-clock metadata
 is included in new replay configurations.
 
-Refresh both established datasheets with
-`python scripts/build_btaudit2_visualization_dataset.py --force`, then rerun
-the notebooks. Add `--episode-index-min 2 --episode-index-max 21` to rebuild
-only the evaluation export. The schema-version check invalidates older caches
-missing selected-auditor fields or supporting evidence. Notebook CSV readers
-fail explicitly on stale schemas; they do not silently redo extraction.
+**Corrected-replay clocks:** the corrected Qwen3-VL and Qwen3.5 replays scale
+simulation time to the measured video duration (the same duration-ratio
+convention as Luna), so all three share one video clock for timing. The earlier
+Sheet2 clock, which produced a 4 s median error for Qwen3-VL and disagreed with
+the supplied manuscript example, is superseded; corrected Qwen3-VL timing
+within +/-2 s is 88 of 107 matched events. Per-node evidence is exported for inspection.
 
-**Original-Qwen3 timing discrepancy:** on the current frozen local snapshot,
-Sheet2 reproduces the supplied Qwen3-VL mission/node counts but its stored
-`video_time_m:ss` yields median signed/absolute error 4 s and 2/16 matched
-events within +/-2 s, versus the supplied manuscript example's 1 s and 15/16.
-Original Sheet2 timing and later replay-sheet timing have different historical
-clock conventions. These notebooks do not invent a rescaling to force
-agreement. Reconcile clocks against frame/video evidence before publishing
-cross-auditor timing conclusions; per-node evidence is exported for inspection.
-The other supplied baseline timing rows reproduce the example counts.
+Refresh the established datasheets with
+`python scripts/build_btaudit2_visualization_dataset.py --force`, then rerun
+the notebooks. Both are rebuilt (all 488 recordings and the 464 evaluation
+subset); use `--output-dir` to stage them elsewhere first. The builder requires
+every model sheet for evaluation episodes and validates each selected run
+against the ledger, so it fails rather than falling back to superseded sheets;
+`--allow-missing-models` and `--run-ledger` adjust that for new cohorts. The
+schema-version check invalidates older caches missing selected-auditor fields or
+supporting evidence. Notebook CSV readers fail explicitly on stale schemas; they
+do not silently redo extraction.
 
 Exports now share the [paper bundle](../data/derived/vibtarve_paper/index.html)
 at `data/derived/vibtarve_paper/`: short-labeled 7.2-inch vector PDFs and
@@ -307,6 +356,24 @@ unchanged input CSV under `data/episodes.csv`. The index provides titles,
 descriptions, previews and downloads; the JSON catalog records source SHA256
 and flags mixed-source or incomplete stage exports. Export codes are retained
 in filenames and catalog IDs, not figure/table titles or HTML headings.
+All main figures use the same 0.1-inch main-title/panel-title gap at 7.2-inch
+print width as the prompt-development figures, including side-by-side
+alternatives and image evidence. The standalone
+`figures/f06_families_accuracy.pdf` / `.png` shows only node-family balanced
+accuracy and sample sizes, using the same values and cohorts as the retained
+combined `f06_families` diagnostic.
+The standalone heatmap has one main title and no redundant panel subtitle;
+its compact header spacing is measured directly from the heatmap.
+Both node-family heatmaps use the sequential green-blue `GnBu` palette with a
+fixed, explicitly labeled 45-85% color scale to distinguish the observed
+48.9-82.0% values. Colorbar extensions mark saturation beyond those limits;
+numeric values and sample sizes are unchanged, missing values remain gray,
+and black/white annotations follow the cell background's luminance.
+The green-blue palette was published on October 28, 2026, in dataset revision
+[`3a6136db50e8757088a53b62a2972fd0d27cf3a9`](https://huggingface.co/datasets/jmberhold/VIBTARVE/commit/3a6136db50e8757088a53b62a2972fd0d27cf3a9).
+These main-figure updates were published on October 27, 2026, in dataset
+revision [`eb616c839f4e99b06013199923317e956f6f6389`](https://huggingface.co/datasets/jmberhold/VIBTARVE/commit/eb616c839f4e99b06013199923317e956f6f6389).
+The released data, tables, and prompt-development assets were preserved.
 Replaced managed case exports are removed when model coverage changes, avoiding
 stale figures alongside the refreshed bundle. Rebuild all sections with
 `python -m scripts.paper_bundle`, or refresh a section from its notebook.
@@ -375,12 +442,14 @@ The dataset repository is
 [`jmberhold/VIBTARVE`](https://huggingface.co/datasets/jmberhold/VIBTARVE),
 now public and ungated, with **CC BY 4.0** dataset metadata. The maintainer confirmed
 upstream redistribution rights and reviewer consent on October 24, 2026.
-This does not assign a software license to this implementation repository or
-relicense upstream dependencies.
+These dataset-release approvals are complete. The original implementation and
+associated documentation are separately released under the [MIT License](../LICENSE);
+the dataset remains CC BY 4.0. Third-party dependencies, models and assets retain
+their own licenses and terms.
 
 The approved snapshot was uploaded on October 24, 2026, at
 [`69f53f645fe670578582914fd40f0957de1208a4`](https://huggingface.co/datasets/jmberhold/VIBTARVE/commit/69f53f645fe670578582914fd40f0957de1208a4).
-The repository remained private. All 4,466 remote file names, sizes, and content
+At that initial upload, the repository was still private. All 4,466 remote file names, sizes, and content
 hashes matched the approved local snapshot, and authenticated Hub loading
 verified the 464 evaluation episode rows and 1,264 evaluation annotation rows.
 The resumable upload cache is operator state and is not part of the dataset.
@@ -532,7 +601,7 @@ entry.
    Publish missingness, eligible denominators and annotation agreement separately
    from simulator success and model transport quality.
 
-## Reproduction limits and future distribution
+## Reproduction limits and release maintenance
 
 Reanalysis can be reproduced from the supplied artifacts and a recorded software
 commit. Exact regeneration is not guaranteed: sampling is stochastic, historical
@@ -543,6 +612,7 @@ must be pinned before claiming an exact new-run replication.
 The verified public Hugging Face snapshot and CC BY 4.0 dataset metadata are
 recorded above. For future releases, review the staged privacy/quality reports,
 attribution, versioned checksums, model/upstream revisions and an append-only
-contribution schema. Dataset rights and consent confirmation do not establish
-a software license for this repository.
-See [research attribution and release blockers](research_attribution.md).
+contribution schema. The original implementation and associated documentation
+are separately MIT-licensed; dataset rights and consent confirmation do not
+supersede third-party licenses or usage terms.
+See [research attribution, licensing and release status](research_attribution.md#release-status-and-licensing).

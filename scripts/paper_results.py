@@ -42,6 +42,7 @@ TABLE_STAGES = {
     "sensitivity": "02",
     "paired_sensitivity": "02",
     "replay_provenance": "02",
+    "run_alignment": "02",
     "prompt_completion_rates": "02",
     "prompt_error_tradeoff": "02",
     "node_family_metrics": "02",
@@ -113,7 +114,7 @@ def load_paper_results(
         frame = frame[frame["episode_dir"].isin(selected_names)]
     if frame.empty:
         raise ValueError("No evaluation episodes in the visualization datasheet")
-    episodes, nodes, observation_rows, provenance = [], [], [], []
+    episodes, nodes, observation_rows, provenance, alignment = [], [], [], [], []
     for source in frame.to_dict(orient="records"):
         name, index = source["episode_dir"], int(source["episode_index"])
         cohort = "tuning" if index == 1 else "evaluation"
@@ -150,8 +151,22 @@ def load_paper_results(
             record["human_reviewed"] and record["human_nodes_available"] == len(required)
         )
         episodes.append(record)
+        untimed = set()
         for key in MODEL_LABELS:
-            for observation in json.loads(source[f"{key}_observations_json"]):
+            saved = json.loads(source[f"{key}_observations_json"])
+            # Only an explicit False excludes; runs without an audit verdict stay in the analysis.
+            aligned = _boolean(source.get(f"{key}_bt_aligned"))
+            if saved:
+                alignment.append({
+                    "cohort": cohort, "model_key": key, "model": MODEL_LABELS[key],
+                    "run_disposition": _text(source.get(f"{key}_run_disposition")) or "unrecorded",
+                    "bt_aligned": aligned, "in_analysis": aligned is not False, "episode_dir": name,
+                })
+            if aligned is False:
+                continue
+            if any(o.get("timing_basis") == "unavailable_video_duration" for o in saved):
+                untimed.add(key)
+            for observation in saved:
                 if not {"node_position", "node_position_basis", "model_node_count"}.issubset(observation):
                     raise ValueError(f"Missing positional metadata for {key} in {name}; rebuild the datasheet")
                 observation_rows.append({
@@ -163,10 +178,11 @@ def load_paper_results(
         calibration = json.loads(source["luna6_time_calibration_json"])
         for attempt in json.loads(source["replay_provenance_json"]):
             clock = calibration if attempt["model_key"] == "luna6" else {}
+            basis = "unavailable_video_duration" if attempt["model_key"] in untimed else "stored_source_sheet"
             provenance.append({
                 "episode_dir": name, "cohort": cohort, **attempt,
                 "model": MODEL_LABELS[attempt["model_key"]],
-                "analysis_time_basis": clock.get("clock", "stored_source_sheet"),
+                "analysis_time_basis": clock.get("clock", basis),
                 "analysis_video_duration_s": clock.get("video_duration_s"),
                 "analysis_video_seconds_per_step": clock.get("video_seconds_per_saved_step"),
             })
@@ -174,7 +190,10 @@ def load_paper_results(
         columns=["episode_dir", "model_name", "canonical_node_id", "model_status_norm", "video_time_s",
                  "model_notes", "model_latency_s"]
     )
-    return build_paper_results(pd.DataFrame(episodes), pd.DataFrame(nodes), observations, pd.DataFrame(provenance))
+    return build_paper_results(
+        pd.DataFrame(episodes), pd.DataFrame(nodes), observations, pd.DataFrame(provenance),
+        pd.DataFrame(alignment),
+    )
 
 
 def _metrics(truth: pd.Series, prediction: pd.Series) -> dict:
@@ -203,9 +222,23 @@ def _metric_table(frame: pd.DataFrame, groups: list[str], truth: str, prediction
     return pd.DataFrame(rows, columns=[*groups, *list(_metrics(pd.Series(dtype=bool), pd.Series(dtype=bool)))])
 
 
+def _run_alignment_table(alignment: pd.DataFrame | None) -> pd.DataFrame:
+    columns = ["cohort", "model_key", "model", "run_disposition", "bt_aligned", "in_analysis", "episodes"]
+    if alignment is None or alignment.empty:
+        return pd.DataFrame(columns=columns)
+    grouped = alignment.assign(bt_aligned=alignment["bt_aligned"].astype(object).where(
+        alignment["bt_aligned"].notna(), "unrecorded",
+    )).groupby(columns[:-1], sort=False).size().rename("episodes").reset_index()
+    order = {key: index for index, key in enumerate(MODEL_LABELS)}
+    return grouped.sort_values(
+        ["cohort", "model_key", "run_disposition"], key=lambda col: col.map(order) if col.name == "model_key" else col,
+        kind="stable",
+    ).reset_index(drop=True)
+
+
 def build_paper_results(
     episodes: pd.DataFrame, nodes: pd.DataFrame, observations: pd.DataFrame,
-    provenance: pd.DataFrame | None = None,
+    provenance: pd.DataFrame | None = None, alignment: pd.DataFrame | None = None,
 ) -> PaperResults:
     """Compute exact denominators; missing model episodes are not negatives."""
     if episodes["episode_dir"].duplicated().any() or nodes.duplicated(["episode_dir", "node_id"]).any():
@@ -509,6 +542,7 @@ def build_paper_results(
         ).reset_index(),
         "sensitivity": sensitivity, "paired_sensitivity": pd.DataFrame(paired),
         "replay_provenance": provenance if provenance is not None else pd.DataFrame(),
+        "run_alignment": _run_alignment_table(alignment),
         "prompt_completion_rates": pd.DataFrame(prompt_rates),
         "prompt_error_tradeoff": prompt_errors,
         "node_family_metrics": family_metrics,
@@ -697,7 +731,7 @@ def layout_case_frames(figure: plt.Figure) -> None:
     )
     heading = figure._suptitle
     heading_height = heading.get_window_extent(renderer).height / figure.dpi if heading else 0
-    height = image_height + title_clearance + heading_height + 3 * gutter
+    height = image_height + title_clearance + heading_height + 2 * gutter + 0.1
     figure.set_size_inches(width, height)
     left = gutter
     for axis, ratio in zip(axes, ratios):
@@ -930,7 +964,7 @@ def plot_prompt_sensitivity(results: PaperResults) -> plt.Figure:
     return figure
 
 
-def plot_node_family_performance(results: PaperResults) -> plt.Figure:
+def _plot_node_family_heatmap(results: PaperResults, heatmap: plt.Axes) -> None:
     table = results.tables["node_family_metrics"]
     if table.empty:
         raise ValueError("No reviewed node-family comparisons available")
@@ -941,21 +975,46 @@ def plot_node_family_performance(results: PaperResults) -> plt.Figure:
     counts = table.pivot(index="node_family", columns="model", values="n").reindex(
         index=NODE_TYPE_ORDER, columns=models,
     )
-    figure, (heatmap, errors) = plt.subplots(1, 2, figsize=(16, 6))
-    image = heatmap.imshow(np.ma.masked_invalid(matrix.to_numpy(dtype=float)), cmap="RdYlBu", vmin=0, vmax=100)
+    image = heatmap.imshow(np.ma.masked_invalid(matrix.to_numpy(dtype=float)), cmap="GnBu", vmin=45, vmax=85)
     heatmap.set_facecolor("#dddddd")
     for row in range(len(NODE_TYPE_ORDER)):
         for column in range(len(models)):
             value, n = matrix.iloc[row, column], counts.iloc[row, column]
             label = f"{value:.1f}" if pd.notna(value) else "N/A"
+            channels = image.to_rgba(value)[:3]
+            luminance = sum(
+                weight * (channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4)
+                for weight, channel in zip((0.2126, 0.7152, 0.0722), channels)
+            )
+            color = "white" if pd.notna(value) and luminance < 0.179 else "black"
             heatmap.text(column, row, f"{label}\nn={int(n) if pd.notna(n) else 0}",
-                         ha="center", va="center", color="white" if pd.notna(value) and (value < 20 or value > 80) else "black",
-                         fontsize=9)
+                         ha="center", va="center", color=color, fontsize=9)
     heatmap.set(xticks=range(len(models)), xticklabels=models,
                 yticks=range(len(NODE_TYPE_ORDER)), yticklabels=NODE_TYPE_ORDER,
-                title="A. Balanced accuracy by node family")
+                title="Balanced accuracy by node family")
     heatmap.tick_params(axis="x", rotation=25)
-    figure.colorbar(image, ax=heatmap, shrink=0.8, label="Balanced accuracy (%)")
+    heatmap.figure.colorbar(
+        image, ax=heatmap, shrink=0.8, ticks=range(45, 86, 10), extend="both",
+        label="Balanced accuracy (%)\nColor scale: 45-85%",
+    )
+
+
+def plot_node_family_balanced_accuracy(results: PaperResults) -> plt.Figure:
+    """Accuracy-only companion with the combined diagnostic's cohorts and counts."""
+    figure, heatmap = plt.subplots(figsize=(9, 4.8))
+    _plot_node_family_heatmap(results, heatmap)
+    heatmap.set_title("")
+    figure.suptitle("Node-family balanced accuracy")
+    figure.tight_layout()
+    return figure
+
+
+def plot_node_family_performance(results: PaperResults) -> plt.Figure:
+    figure, (heatmap, errors) = plt.subplots(1, 2, figsize=(16, 6))
+    _plot_node_family_heatmap(results, heatmap)
+    heatmap.set_title("A. Balanced accuracy by node family")
+    table = results.tables["node_family_metrics"]
+    models = [MODEL_LABELS[key] for key in EVALUATION_MODELS]
     width = 0.8 / len(models)
     x = np.arange(len(NODE_TYPE_ORDER))
     for index, model in enumerate(models):

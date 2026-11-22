@@ -46,6 +46,16 @@ class NodePositionTests(unittest.TestCase):
         self.assertEqual(result["basis"], "recorded_BT_count_and_observed_prefix_order")
         self.assertEqual(old["nodes"][0]["node_id"], "old1")
 
+    def test_verified_current_tree_runs_never_use_historical_contract_or_prefix_inference(self):
+        old = {"nodes": contract("old1", "old2"), "basis": "recorded_original_BT"}
+        current = contract("new1", "new2", "new3")
+        bound = reconcile_positions(current, old, [response("new2")], "qwen3", current_only=True)
+        self.assertEqual((bound["node_count"], bound["bindings"]), (3, {"new2": 2}))
+        self.assertEqual(bound["basis"], "saved_BT_ID_binding")
+        unresolved = reconcile_positions(current, old, [response("other")], "qwen3", current_only=True)
+        self.assertIsNone(unresolved["node_count"])
+        self.assertEqual(unresolved["bindings"], {})
+
     def test_unknown_order_is_not_compressed_without_frame_zero_or_full_contract(self):
         for old, records in (
             ({"nodes": contract("old1", "old2")}, [response("other", frame=5)]),

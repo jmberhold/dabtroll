@@ -29,11 +29,25 @@ The shared resolver in [prompts.py](../scripts/prompts.py) accepts:
 - A versioned template ID such as `qwen38_v1`, resolved to
   [config/status_prompts/qwen38_v1.txt](../config/status_prompts/qwen38_v1.txt)
   or [luna6_v1.txt](../config/status_prompts/luna6_v1.txt).
+- `qwen3_v1` and `qwen35_mod1_v1` are versioned snapshots of the historical
+  Qwen3 and Qwen3.5 Mod1 status prompts. Their wording is preserved from the
+  prompt builders and can be selected independently of the serving model.
 - An explicit path to a `.txt` template, including a previously saved snapshot.
 
 Use `--status-prompt <selector>` for Python CLIs, or `STATUS_PROMPT=<selector>`
 for the episode-1 shell runner. The same resolver is used by live simulation
 and replay; model choice and prompt choice are independent.
+
+For BT-corrected replays, select `qwen3_v1` with Qwen3 and
+`qwen35_mod1_v1` with Qwen3.5 Mod1. The episode `missionengine.jsonl` request
+records preserve the rendered prompt text, which was used to verify these
+snapshots; older outputs do not always record a prompt ID or source hash.
+The corrected replays wrote sheets `qwen3_v1_BTfix` and `qwen35_mod1_v1_BTfix`
+for all 464 evaluation recordings; the
+[selected-run ledger](../config/datasets/btaudit2_20261021_selected_runs.csv)
+records which attempt produced each sheet. The original Qwen3.5 prompt sheet
+(`Sheet3`) is a historical supplement: only 102 episodes were recorded on the
+final BT, with at most eight frames versus ten for the model-specific prompt.
 
 ## Timing contract and historical eight-frame runs
 

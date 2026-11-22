@@ -32,6 +32,7 @@ else:
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RUN_LEDGER = ROOT / "config/datasets/btaudit2_20261021_selected_runs.csv"
 EPISODES_CSV = "btaudit2_all_episodes_visualization_rows.csv"
 OBSERVATIONS_CSV = "btaudit2_all_episodes_visualization_observations.csv"
 SENSITIVE_KEY = re.compile(
@@ -640,23 +641,38 @@ annotations remain available but are not automatically scored as ground truth.
 
 Primary selected auditor observations come from the canonical schema-{SCHEMA_VERSION}
 tables; historical conditions remain in workbook rows and replay-attempt records.
-Synthetic BT milestones are labeled separately from mission-engine responses.
-Synthetic milestones do not supply scoring judgments. Comparisons use ordinal
-Node 1, Node 2, etc., preserving raw IDs and full model-specific contracts in
-`model_node_contracts_json`. Observation rows retain `node_position`,
-`node_position_basis`, and `model_node_count`. Only shared positions are scored;
-extra positions are not comparable, not false incomplete. Unreached positions
-inside known contracts remain incomplete; missing model episodes are not negatives.
-Whole-mission accuracy excludes unequal full node counts. Positional agreement
-does not establish semantic equivalence of historical BT versions.
-Explicitly labeled legacy prefix inferences are not verified historical ID bindings.
-Unresolved contracts remain not comparable.
+Synthetic BT milestones are labeled separately from mission-engine responses and
+do not supply scoring judgments.
 
-Machine/simulation time differs from review-video time. Luna's derived video times use
-frame-index/duration scaling; original timestamps and timing-basis metadata are retained.
-Historical Qwen3.8 uses eight-frame contact sheets; Luna uses ten separate images.
-These are not controlled input-matched model comparisons. The historical Qwen3-VL
-clock discrepancy remains unresolved; do not silently recalibrate it.
+**One behavior tree per recording.** Collection first regenerated the behavior tree only
+every 4-6 episodes and later produced one per episode. Qwen3-VL and Qwen3.5 (model-specific
+prompt) were therefore replayed on all {manifest['cohorts'].get('evaluation', 0)} evaluation
+recordings (workbook sheets `qwen3_v1_BTfix` and `qwen35_mod1_v1_BTfix`), so all six primary
+auditors are compared against each recording's own BT. The earlier `Sheet2` and `Sheet4`
+runs remain in `workbook_rows` as superseded history. The selected-run ledger
+(`provenance/btaudit2_20261021_selected_runs.csv`, one row per episode and model configuration)
+records the selected sheet and replay attempt, the saved BT hash, whether the run began after
+the recording's last BT regeneration, prompt and response-quality checks, and a disposition.
+Observation and episode rows carry `<model>_selected_attempt`, `<model>_run_disposition`
+and `<model>_bt_aligned`. The original-prompt Qwen3.5 sheet (`Sheet3`) is a **historical
+supplement**: its 102 final-BT recordings differ from the model-specific prompt in frame
+count (at most eight versus ten) and are not a prompt-only comparison; its 362 earlier
+recordings predate the last BT regeneration and are excluded from analyses.
+
+Comparisons use ordinal Node 1, Node 2, etc. in human Sheet1 order, bound by saved BT node
+ID and preserving raw IDs and full model contracts in `model_node_contracts_json`.
+Observation rows retain `node_position`, `node_position_basis` and `model_node_count`.
+Every primary run has the reviewed node count. Unreached positions inside a contract
+remain incomplete; missing model episodes are not negatives. Positional agreement does not
+establish semantic equivalence of auditor and human wording.
+
+Machine/simulation time differs from review-video time. Qwen3-VL, Qwen3.5 and Luna video
+times are simulation time scaled to the measured video duration; original timestamps and
+timing-basis metadata are retained. Seven unreadable, unreviewed videos have no video time
+for those three auditors. Molmo2, Gemma 4 and Qwen3.8 retain stored sheet times.
+Qwen3-VL, Qwen3.5 and Luna use ten-frame windows; Molmo2, Gemma 4 and Qwen3.8 use at most
+eight frames (Qwen3.8 as one labeled contact sheet). Prompts and token budgets are
+model-specific, so these are not controlled input-matched model comparisons.
 
 Unreadable videos are excluded from playable media, not from episode/node/annotation
 tables or available saved frames. Consult `provenance/quality_issues.json` for explicit
@@ -729,6 +745,7 @@ def validate_release(output: Path) -> dict:
 
 def prepare_release(root: Path, output: Path, *, expected_count: int = 488,
                     rights_confirmed: bool = False, paper_bundle: Path | None = None,
+                    run_ledger: Path | None = None,
                     shard_bytes: int = 128 * 1024 * 1024) -> dict:
     if not rights_confirmed:
         raise ValueError("Explicit confirmation of redistribution rights and reviewer consent is required")
@@ -932,6 +949,19 @@ def prepare_release(root: Path, output: Path, *, expected_count: int = 488,
             )) else "historical_analysis_not_primary_ground_truth",
             "transform": "Path/contact sanitization; source filenames, column order and row counts preserved",
         })
+    ledger_info = None
+    if run_ledger is not None:
+        ledger = pd.read_csv(run_ledger, dtype=str, keep_default_na=False)
+        if not set(ledger.episode).issubset(known):
+            raise ValueError("Selected-run ledger references unknown episodes")
+        (output / "provenance").mkdir(exist_ok=True)
+        target = output / "provenance" / run_ledger.name
+        portable.frame(ledger).to_csv(target, index=False)
+        ledger_info = {
+            "path": f"provenance/{run_ledger.name}", "rows": len(ledger),
+            "dispositions": dict(Counter(ledger.disposition)),
+            "source_sha256": sha256(run_ledger), "released_sha256": sha256(target),
+        }
     paper_assets = None
     if paper_bundle is not None:
         catalog = json.loads((paper_bundle / "manifest.json").read_text())
@@ -970,6 +1000,7 @@ def prepare_release(root: Path, output: Path, *, expected_count: int = 488,
         "quality_issue_counts": dict(Counter(issue["kind"] for issue in issues)),
         "summary_csv_count": len(summary_exports), "tables": table_info,
         "paper_bundle": paper_assets,
+        "selected_run_ledger": ledger_info,
         "episode_access": episode_access,
         "originals_modified": False, "upload_performed": False,
         "source_code": "https://github.com/jmberhold/dabtroll",
@@ -987,6 +1018,7 @@ def prepare_release(root: Path, output: Path, *, expected_count: int = 488,
         name: sha256(ROOT / name) for name in (
             "scripts/prepare_vibtarve_release.py", "scripts/build_btaudit2_visualization_dataset.py",
             "scripts/replay_video_utils.py", "scripts/notebook_qwen_compare_utils.py",
+            "scripts/node_positions.py", "scripts/audit_btaudit2_selected_runs.py",
             "requirements-analysis.txt",
         )
     })
@@ -1030,11 +1062,12 @@ def main() -> None:
     parser.add_argument("--expected-count", type=int, default=488)
     parser.add_argument("--rights-confirmed", action="store_true")
     parser.add_argument("--paper-bundle", type=Path)
+    parser.add_argument("--run-ledger", type=Path, default=DEFAULT_RUN_LEDGER)
     args = parser.parse_args()
     manifest = prepare_release(args.dataset_root, args.output_dir,
                                expected_count=args.expected_count,
                                rights_confirmed=args.rights_confirmed,
-                               paper_bundle=args.paper_bundle)
+                               paper_bundle=args.paper_bundle, run_ledger=args.run_ledger)
     print(json.dumps({k: v for k, v in manifest.items() if k != "tables"}, indent=2))
 
 

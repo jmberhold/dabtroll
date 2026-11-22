@@ -280,6 +280,26 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "outside"):
                 release.prepare_release(root, root / "candidate", rights_confirmed=True)
 
+    def test_selected_run_ledger_is_released_and_must_reference_known_episodes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, base = Path(directory) / "btaudit2", Path(directory)
+            rows = fixture(root)
+            ledger = base / "ledger.csv"
+            pd.DataFrame([{"episode": rows[1]["episode_dir"], "model": "qwen3",
+                           "disposition": "verified_primary"}]).to_csv(ledger, index=False)
+            with patch.object(release, "probe_video", return_value=2.0):
+                manifest = release.prepare_release(root, base / "candidate", expected_count=2,
+                                                   rights_confirmed=True, run_ledger=ledger)
+            info = manifest["selected_run_ledger"]
+            self.assertEqual(info["dispositions"], {"verified_primary": 1})
+            self.assertEqual(release.sha256(base / "candidate" / info["path"]), info["released_sha256"])
+            pd.DataFrame([{"episode": "unknown", "model": "qwen3", "disposition": "x"}]).to_csv(
+                ledger, index=False)
+            with patch.object(release, "probe_video", return_value=2.0), \
+                    self.assertRaisesRegex(ValueError, "unknown episodes"):
+                release.prepare_release(root, base / "rejected", expected_count=2,
+                                        rights_confirmed=True, run_ledger=ledger)
+
     def test_card_does_not_advertise_empty_hugging_face_splits(self):
         info = {name: {"rows": 0, "cohorts": {}} for name in release.TABLES}
         info["episodes"] = {"rows": 2, "cohorts": {"prompt_development": 1, "evaluation": 1}}
@@ -292,7 +312,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("split: evaluation", progress)
         self.assertNotIn("prompt_development.parquet", progress)
         self.assertNotIn("config_name: workbook_rows", card)
-        self.assertIn("extra positions are not comparable, not false incomplete", card)
+        self.assertIn("One behavior tree per recording", card)
+        self.assertIn("`<model>_bt_aligned`", card)
+        self.assertNotIn("response-prefix inference", card)
         self.assertIn("model_node_contracts_json", card)
         tags = card.split("tags:\n", 1)[1].split("configs:", 1)[0].splitlines()
         self.assertEqual(tags, [f"- {tag}" for tag in release.DATASET_TAGS])

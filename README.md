@@ -55,13 +55,23 @@ not an accuracy claim or proof of complete human review. Selected Luna v5 also
 covers all 464 evaluation recordings (9,469 clean responses) and is integrated
 as **Luna 6** in the same CSV-driven paper workflow. Its ten separate input
 frames differ from the historical Qwen3.8 eight-frame contact sheets.
-See the dataset guide
-for denominators, mixed-budget baseline caveats, and reproducibility limits.
+Every primary auditor is compared on each recording against that recording's own
+behavior tree: collection moved from one BT per 4-6 episodes to one per episode,
+so Qwen3-VL and Qwen3.5 were replayed on all 464 evaluation recordings
+(`qwen3_v1_BTfix`, `qwen35_mod1_v1_BTfix`), and a
+[selected-run ledger](config/datasets/btaudit2_20261021_selected_runs.csv)
+verifies all six primary auditors on all 464. See the dataset guide
+for denominators, per-model prompt/frame/token settings, and reproducibility limits.
 
 **Dataset license:** the public VIBTARVE dataset is released under **CC BY 4.0**.
-**Software licensing remains unresolved:** no license has been selected for this
-implementation repository. Dataset terms do not relicense the code, model
-weights, or upstream simulator assets as standalone resources.
+Redistribution rights and reviewer consent for the released dataset were
+confirmed on October 24, 2026; the dataset is public and ungated.
+**Software license:** the original VIBTARVE implementation and associated
+documentation are released under the [MIT License](LICENSE). CC BY 4.0 applies
+to the dataset, not to this code. Third-party dependencies, model weights and
+upstream simulator assets retain their own licenses and terms. See
+[release status and licensing](docs/research_attribution.md#release-status-and-licensing)
+for the distinction and ongoing release-maintenance requirements.
 
 ## Legacy DABTROLL runtime reference
 

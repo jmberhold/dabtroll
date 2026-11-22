@@ -73,7 +73,7 @@ class PaperBundleTests(unittest.TestCase):
             self.assertEqual((output / "data/episodes.csv").read_bytes(), original)
             self.assertEqual(catalog["source"]["sha256"], hashlib.sha256(original).hexdigest())
             self.assertEqual({e["stage"] for e in catalog["entries"]}, {"01", "02", "03"})
-            self.assertEqual(sum(e["kind"] == "figure" for e in catalog["entries"]), 10)
+            self.assertEqual(sum(e["kind"] == "figure" for e in catalog["entries"]), 11)
             self.assertEqual(sum("tex" in e["files"] for e in catalog["entries"]), 5)
             self.assertEqual(len({e["label"] for e in catalog["entries"]}), len(catalog["entries"]))
             for entry in catalog["entries"]:
@@ -124,6 +124,7 @@ class PaperBundleTests(unittest.TestCase):
             ("sensitivity", paper.plot_sensitivity),
             ("prompt", paper.plot_prompt_sensitivity),
             ("family", paper.plot_node_family_performance),
+            ("family_accuracy", paper.plot_node_family_balanced_accuracy),
             ("sequential", paper.plot_sequential_completion),
         ):
             with self.subTest(name=name), plt.rc_context(bundle.STYLE):
@@ -143,6 +144,83 @@ class PaperBundleTests(unittest.TestCase):
                     for left, right in zip(labels, labels[1:]):
                         self.assertFalse(left.get_window_extent(renderer).overlaps(right.get_window_extent(renderer)))
                 plt.close(figure)
+
+    def test_main_figure_header_spacing_matches_development(self):
+        results = prompt_fixture()
+        factories = (
+            ("corpus", paper.plot_corpus), ("endpoint", paper.plot_simulator_endpoint),
+            ("sensitivity", paper.plot_sensitivity), ("prompt", paper.plot_prompt_sensitivity),
+            ("family", paper.plot_node_family_performance),
+            ("family_accuracy", paper.plot_node_family_balanced_accuracy),
+            ("mission", paper.plot_metric_by_scenario),
+            ("nodes", lambda r: paper.plot_metric_by_scenario(r, "node")),
+            ("sequential", paper.plot_sequential_completion), ("timing", paper.plot_timing),
+        )
+        for name, factory in factories:
+            layouts = ("stacked", "side_by_side") if name in bundle.MULTIPANEL_NAMES else ("stacked",)
+            for layout in layouts:
+                with self.subTest(name=name, layout=layout), plt.rc_context(bundle.STYLE):
+                    figure = factory(results)
+                    bundle.prepare_figure(figure, name, bundle.FIGURE_INFO[name][1], layout=layout)
+                    self.assert_header_gap(figure, 2 if layout == "side_by_side" else 1)
+                    plt.close(figure)
+        for name in ("frames", "case"):
+            with self.subTest(name=name), plt.rc_context(bundle.STYLE):
+                figure, axes = plt.subplots(1, 3)
+                for axis in axes:
+                    axis.imshow(np.zeros((8, 12, 3)))
+                    axis.set_title("frame_00010.jpg\nresponse evidence")
+                    axis.axis("off")
+                bundle.prepare_figure(figure, name, "Representative execution frames")
+                self.assert_header_gap(figure)
+                plt.close(figure)
+
+    def test_node_family_color_scale_survives_publication_layouts(self):
+        results = prompt_fixture()
+        for name, factory in (
+            ("family", paper.plot_node_family_performance),
+            ("family_accuracy", paper.plot_node_family_balanced_accuracy),
+        ):
+            with self.subTest(name=name), plt.rc_context(bundle.STYLE):
+                figure = factory(results)
+                image = figure.axes[0].images[0]
+                values = image.get_array().copy()
+                labels = [text.get_color() for text in figure.axes[0].texts]
+                for layout in ("stacked", "side_by_side") if name == "family" else ("stacked",):
+                    bundle.prepare_figure(figure, name, bundle.FIGURE_INFO[name][1], layout=layout)
+                    self.assertEqual(image.get_cmap().name, "GnBu")
+                    self.assertEqual(image.get_clim(), (45, 85))
+                    self.assertGreater(float(image.norm(82) - image.norm(48.9)), 0.8)
+                    np.testing.assert_equal(image.get_array(), values)
+                    self.assertEqual([text.get_color() for text in figure.axes[0].texts], labels)
+                    np.testing.assert_equal(image.colorbar.get_ticks(), [45, 55, 65, 75, 85])
+                    self.assertIn("45-85%", image.colorbar.ax.get_ylabel())
+                    self.assertEqual(image.colorbar.extend, "both")
+                    self.assert_header_gap(figure, 2 if layout == "side_by_side" else 1)
+                plt.close(figure)
+
+    def assert_header_gap(self, figure, scale=1):
+        renderer = figure.canvas.get_renderer()
+        heading = figure._suptitle.get_window_extent(renderer)
+        panel_top = max(
+            (axis.title if axis.get_title() else axis).get_window_extent(renderer).y1
+            for axis in figure.axes if axis.get_title() or axis.images
+        )
+        gap_in = (heading.y0 - panel_top) / figure.dpi / scale
+        self.assertAlmostEqual(gap_in, 0.1, places=2)
+        bounds = figure.get_tightbbox(renderer)
+        self.assertGreaterEqual(bounds.y0, 0)
+        self.assertLessEqual(bounds.y1, figure.get_figheight())
+
+    def test_standalone_family_accuracy_has_only_one_title(self):
+        with plt.rc_context(bundle.STYLE):
+            figure = paper.plot_node_family_balanced_accuracy(prompt_fixture())
+            for _ in range(2):
+                bundle.prepare_figure(figure, "family_accuracy", bundle.FIGURE_INFO["family_accuracy"][1])
+                self.assertEqual(figure._suptitle.get_text(), "Node-family balanced accuracy")
+                self.assertTrue(all(not axis.get_title() for axis in figure.axes))
+                self.assert_header_gap(figure)
+            plt.close(figure)
 
     def test_exported_case_gutters_match_image_border(self):
         figure, axes = plt.subplots(1, 3)
