@@ -2,7 +2,8 @@
 
 Reads the frozen cohort and writes one ledger row per episode and model. Source logs and
 workbooks are only read. The ledger records, for each selected workbook sheet, the single
-replay attempt whose responses reproduce it, whether that attempt began after the episode's
+replay attempt whose responses reproduce it, a digest of those responses (so the dataset builder can
+detect a sheet edited after the audit), whether that attempt began after the episode's
 last behavior-tree (BT) regeneration, and whether its prompts quote the saved BT's nodes.
 """
 
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # replay_qwen35_bt_eva
 
 from build_btaudit2_visualization_dataset import (  # noqa: E402
     ALL_MODEL_SPECS, DEFAULT_LOGS_DIR, DEFAULT_SCHEDULE_PATH, _read_schedule, _select_model_sheet,
+    response_fingerprint,
 )
 from prompts import load_status_prompt  # noqa: E402
 from replay_qwen35_bt_eval import _parse_status_json, _summarize_mission_response_quality  # noqa: E402
@@ -150,15 +152,15 @@ def audit_attempt(attempt: Path, sheet, observed: Counter, responses: list[dict]
 def disposition(row: dict, model: str) -> str:
     if row["after_regen"] == "False":
         return "historical_only_pre_regeneration"
-    if model == HISTORICAL_CONFIGURATION_MODEL:
-        return "historical_configuration_not_prompt_only"
     verified = (
         row["matching_attempts"] == 1 and row["pairs_ok"] == "True"
         and row["quality"] == "clean_mission_responses" and row["regen_ok"]
         and row["prompt_node_text"] == "match" and row["after_regen"] == "True"
         and row["prompt_hash_ok"] in ("legacy", "True")
     )
-    return "verified_primary" if verified else "needs_review"
+    if not verified:
+        return "needs_review"
+    return "historical_configuration_not_prompt_only" if model == HISTORICAL_CONFIGURATION_MODEL else "verified_primary"
 
 
 def audit(logs_dir: Path, manifest: Path, schedule: Path, baseline_audit: Path) -> list[dict]:
@@ -205,7 +207,8 @@ def audit(logs_dir: Path, manifest: Path, schedule: Path, baseline_audit: Path) 
                 row = dict(episode=name, model=spec.model_name, sheet=sheet.title, reviewed=name in reviewed,
                            bt_hash=bt_hash, regen_ok=regen_ok, human_definition_match=human_match,
                            human_values_unchanged=current == baseline[name]["human_sheet_fingerprints"],
-                           n_responses=len(responses), n_milestones=len(data) - len(responses),
+                           n_responses=len(responses), response_sha256=response_fingerprint(sheet),
+                           n_milestones=len(data) - len(responses),
                            n_video_time=sum(bool(text(v["video_time_m:ss"])) for v in data),
                            matching_attempts=len(valid), matched_output="|".join(v[0] for v in valid))
                 for position, field in enumerate(FIELDS, 1):

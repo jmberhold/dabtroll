@@ -13,6 +13,7 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+from openpyxl import load_workbook
 
 try:
     from scripts import notebook_qwen_compare_utils as nqcu
@@ -40,9 +41,13 @@ DEFAULT_EVALUATION_EPISODE_CSV_PATH = DEFAULT_LOGS_DIR / "btaudit2_episodes_2_21
 DEFAULT_EVALUATION_OBSERVATION_CSV_PATH = DEFAULT_LOGS_DIR / "btaudit2_episodes_2_21_visualization_observations.csv"
 DEFAULT_RUN_LEDGER_PATH = PROJECT_ROOT / "config" / "datasets" / "btaudit2_20261021_selected_runs.csv"
 SCHEMA_VERSION = 6
+CACHE_STAMP_SUFFIX = ".build.json"  # records the ledger a cached CSV pair was built from
 EVALUATION_FIRST_EPISODE = 2
 BT_ALIGNED_DISPOSITIONS = frozenset({"verified_primary", "historical_configuration_not_prompt_only"})
-LEDGER_COLUMNS = frozenset({"episode", "model", "sheet", "n_responses", "matched_output", "disposition"})
+LEDGER_COLUMNS = frozenset(
+    {"episode", "model", "sheet", "n_responses", "response_sha256", "matched_output", "disposition"}
+)
+RESPONSE_SIGNATURE_FIELDS = ("status_eval_id", "node_id", "machine_frame", "model_status", "model_notes")
 RUN_FIELDS = ("selected_attempt", "run_disposition", "bt_aligned")
 # Columns the shared row builder derives from the historical Sheet2-Sheet4 review sheets.
 LEGACY_BASE_FIELD = re.compile(
@@ -420,8 +425,39 @@ def _read_run_ledger(path: Path | str | None) -> dict[str, dict[str, dict[str, s
     return ledger
 
 
+def response_fingerprint(sheet) -> str:
+    """Digest the model responses on an openpyxl sheet; the audit ledger pins it per selected sheet."""
+    rows = iter(sheet.values)
+    header = next(row for row in rows if row[0] == "milestone_idx")
+
+    def text(value) -> str:
+        return str(value or "").strip().replace("\r\n", "\n")
+
+    signatures = sorted(
+        tuple(text(record.get(field)) for field in RESPONSE_SIGNATURE_FIELDS)
+        for record in (dict(zip(header, row)) for row in rows if row[0] is not None)
+        if record.get("source") == "mission_engine_response"
+    )
+    return hashlib.sha256(json.dumps(signatures).encode()).hexdigest()
+
+
+def _ledger_response_fingerprints(workbook_path: Path, selected_runs: dict[str, dict[str, str]]) -> dict[str, str]:
+    """Fingerprint each ledger-selected sheet. A separate handle is used because pandas' reads disturb row iteration."""
+    if not selected_runs:
+        return {}
+    book = load_workbook(workbook_path, read_only=True, data_only=True)
+    try:
+        return {
+            model: response_fingerprint(book[row["sheet"]]) if row["sheet"] in book.sheetnames else ""
+            for model, row in selected_runs.items()
+        }
+    finally:
+        book.close()
+
+
 def _check_selected_run(
     episode: str, spec: ModelSpec, selected: dict[str, str], sheet_name: str, observations: pd.DataFrame,
+    responses_sha256: str,
 ) -> None:
     """Fail when the workbook no longer matches the audited run for this episode and model."""
     attempt = selected["matched_output"]
@@ -434,6 +470,8 @@ def _check_selected_run(
         raise ValueError(
             f"{episode}/{spec.model_name}: {responses} responses differ from ledger {selected['n_responses']}"
         )
+    if responses_sha256 != selected["response_sha256"]:
+        raise ValueError(f"{episode}/{spec.model_name}: sheet responses differ from the audited run in the ledger")
 
 
 def _read_result_metadata(
@@ -667,6 +705,7 @@ def build_btaudit2_visualization_dataset(
         provenance_attempts = {}
         for attempt in json.loads(record["replay_provenance_json"]):
             provenance_attempts.setdefault(attempt["model_key"], set()).add(attempt["attempt"])
+        response_digests = _ledger_response_fingerprints(workbook_path, selected_runs)
         with pd.ExcelFile(workbook_path) as excel:
             for spec in ALL_MODEL_SPECS:
                 _initialize_model_fields(record, spec)
@@ -681,7 +720,10 @@ def build_btaudit2_visualization_dataset(
                 )
                 selected = selected_runs.get(spec.model_name)
                 if selected is not None:
-                    _check_selected_run(episode_path.name, spec, selected, sheet_name, observations)
+                    _check_selected_run(
+                        episode_path.name, spec, selected, sheet_name, observations,
+                        response_digests.get(spec.model_name, ""),
+                    )
                     if spec.model_name in provenance_attempts and provenance_attempts[spec.model_name] != {
                         selected["matched_output"]
                     }:
@@ -765,19 +807,40 @@ def _missing_required_models(episodes: pd.DataFrame) -> dict[str, int]:
     return missing
 
 
+def _slot_key(node_id: object) -> str:
+    """Normalize action IDs; other node kinds (for example conditions) keep their full ID."""
+    raw = "" if pd.isna(node_id) else str(node_id).strip()
+    return nqcu._canonical_action_node_id(raw) or raw
+
+
 def _restrict_slots_to_required_nodes(record: dict[str, object]) -> None:
     """Blank node slots the shared row builder filled from historical model sheets."""
-    required = {
-        nqcu._canonical_action_node_id(node["node_id"]) for node in json.loads(record["required_nodes_json"])
-    } - {""}
-    record["bt_action_nodes"] = len(required)
+    required_ids = [node["node_id"] for node in json.loads(record["required_nodes_json"])]
+    required = {_slot_key(node_id) for node_id in required_ids} - {""}
+    record["bt_action_nodes"] = len({nqcu._canonical_action_node_id(node_id) for node_id in required_ids} - {""})
     for slot in range(1, 5):
-        slot_node = nqcu._canonical_action_node_id(record.get(f"node_{slot}_node_id", ""))
+        slot_node = _slot_key(record.get(f"node_{slot}_node_id", ""))
         if slot_node in required:
             continue
         for field in SLOT_FIELDS:
             if f"node_{slot}_{field}" in record:
                 record[f"node_{slot}_{field}"] = ""
+
+
+def _ledger_sha256(path: Path | str | None) -> str | None:
+    if path is None:
+        return None
+    path = Path(path).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"Selected-run ledger not found: {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _read_cache_stamp(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def load_or_build_btaudit2_visualization_dataset(
@@ -793,6 +856,8 @@ def load_or_build_btaudit2_visualization_dataset(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     episode_csv_path = Path(episode_csv_path).expanduser().resolve()
     observation_csv_path = Path(observation_csv_path).expanduser().resolve()
+    stamp_path = episode_csv_path.with_name(episode_csv_path.name + CACHE_STAMP_SUFFIX)
+    stamp = {"run_ledger_sha256": _ledger_sha256(run_ledger_path)}
     cache_exists = episode_csv_path.exists() and observation_csv_path.exists()
     cache_has_current_schema = False
     if cache_exists:
@@ -802,6 +867,8 @@ def load_or_build_btaudit2_visualization_dataset(
             if cache_has_current_schema:
                 versions = pd.read_csv(episode_csv_path, usecols=["visualization_schema_version"])
                 cache_has_current_schema = versions["visualization_schema_version"].eq(SCHEMA_VERSION).all()
+            # A cache built from a different (or unrecorded) selected-run ledger is stale.
+            cache_has_current_schema = cache_has_current_schema and _read_cache_stamp(stamp_path) == stamp
         except (OSError, pd.errors.ParserError):
             cache_has_current_schema = False
 
@@ -818,6 +885,7 @@ def load_or_build_btaudit2_visualization_dataset(
         observation_csv_path.parent.mkdir(parents=True, exist_ok=True)
         episodes.to_csv(episode_csv_path, index=False)
         observations.to_csv(observation_csv_path, index=False)
+        stamp_path.write_text(json.dumps(stamp, indent=2) + "\n")
 
     episodes = pd.read_csv(episode_csv_path, low_memory=False)
     observations = pd.read_csv(observation_csv_path, low_memory=False)

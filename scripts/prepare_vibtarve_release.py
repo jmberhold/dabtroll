@@ -651,7 +651,7 @@ recordings (workbook sheets `qwen3_v1_BTfix` and `qwen35_mod1_v1_BTfix`), so all
 auditors are compared against each recording's own BT. The earlier `Sheet2` and `Sheet4`
 runs remain in `workbook_rows` as superseded history. The selected-run ledger
 (`provenance/btaudit2_20261021_selected_runs.csv`, one row per episode and model configuration)
-records the selected sheet and replay attempt, the saved BT hash, whether the run began after
+records the selected sheet and replay attempt, the saved BT hash, a digest of the sheet's responses, whether the run began after
 the recording's last BT regeneration, prompt and response-quality checks, and a disposition.
 Observation and episode rows carry `<model>_selected_attempt`, `<model>_run_disposition`
 and `<model>_bt_aligned`. The original-prompt Qwen3.5 sheet (`Sheet3`) is a **historical

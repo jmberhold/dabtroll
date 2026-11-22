@@ -14,7 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 import pandas as pd
 from PIL import Image
 
@@ -632,11 +632,11 @@ class CorrectedReplaySelectionTests(unittest.TestCase):
         workbook.active.append(["node_order", "node_id", "reviewer_completion_time_m:ss"])
         workbook.active.append([1, "node_action_ready", "0:01"])
         workbook.active.append([2, "node_action_move", None])
-        header = ["node_id", "source", "status_eval_id", "model_status", "video_time_m:ss", "machine_frame"]
+        header = ["milestone_idx", "node_id", "source", "status_eval_id", "model_status", "video_time_m:ss", "machine_frame"]
         for title, rows in (
-            ("Sheet2_MissionEngine_Review", [["node_action_stale", "mission_engine_response", "old", "complete", "0:01", "frame_00000"]]),
-            ("qwen3_v1_BTfix", [["node_action_ready", "mission_engine_response", "r1", "complete", "", "frame_00000"]]),
-            ("qwen35_mod1_v1_BTfix", [["node_action_move", "mission_engine_response", "r1", "complete", "0:02", "frame_00001"]]),
+            ("Sheet2_MissionEngine_Review", [[1, "node_action_stale", "mission_engine_response", "old", "complete", "0:01", "frame_00000"]]),
+            ("qwen3_v1_BTfix", [[1, "node_action_ready", "mission_engine_response", "r1", "complete", "", "frame_00000"]]),
+            ("qwen35_mod1_v1_BTfix", [[1, "node_action_move", "mission_engine_response", "r1", "complete", "0:02", "frame_00001"]]),
         ):
             workbook.create_sheet(title).append(header)
             for row in rows:
@@ -658,12 +658,20 @@ class CorrectedReplaySelectionTests(unittest.TestCase):
 
     def write_ledger(self, root, qwen3_responses=1):
         path = root / "ledger.csv"
+        book = load_workbook(root / self.NAME / "human_rater_evaluation.xlsx", read_only=True, data_only=True)
+        try:
+            digest = {name: dataset.response_fingerprint(book[name]) for name in ("qwen3_v1_BTfix", "qwen35_mod1_v1_BTfix")}
+        finally:
+            book.close()
         pd.DataFrame([
             {"episode": self.NAME, "model": "qwen3", "sheet": "qwen3_v1_BTfix", "n_responses": qwen3_responses,
+             "response_sha256": digest["qwen3_v1_BTfix"],
              "matched_output": "qwen3_v1_BTfix_new", "disposition": "verified_primary"},
             {"episode": self.NAME, "model": "qwen35", "sheet": "qwen35_mod1_v1_BTfix", "n_responses": 1,
+             "response_sha256": digest["qwen35_mod1_v1_BTfix"],
              "matched_output": "qwen35_mod1_v1_BTfix_a", "disposition": "verified_primary"},
             {"episode": self.NAME, "model": "qwen35_qwen3_prompt", "sheet": "", "n_responses": 0,
+             "response_sha256": "",
              "matched_output": "qwen_3_5_x", "disposition": "historical_only_pre_regeneration"},
         ]).to_csv(path, index=False)
         return path
@@ -713,6 +721,21 @@ class CorrectedReplaySelectionTests(unittest.TestCase):
                     logs_dir=root, schedule_path=schedule, run_ledger_path=self.write_ledger(root, qwen3_responses=2),
                 )
 
+    def test_edited_responses_with_unchanged_counts_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            schedule = self.make_episode(root)
+            ledger = self.write_ledger(root)
+            workbook_path = root / self.NAME / "human_rater_evaluation.xlsx"
+            workbook = load_workbook(workbook_path)
+            workbook["qwen3_v1_BTfix"]["E2"] = "incomplete"
+            workbook.save(workbook_path)
+            workbook.close()
+            with self.assertRaisesRegex(ValueError, "sheet responses differ from the audited run"):
+                dataset.build_btaudit2_visualization_dataset(
+                    logs_dir=root, schedule_path=schedule, run_ledger_path=ledger,
+                )
+
     def test_sheet_selection_has_no_fallback_for_evaluation_episodes(self):
         spec = dataset.MODEL_SPECS[0]
         names = ["Sheet2_MissionEngine_Review", "qwen3_v1_BTfix", "qwen3_v1_BTfix_backup"]
@@ -731,6 +754,18 @@ class CorrectedReplaySelectionTests(unittest.TestCase):
         dataset._restrict_slots_to_required_nodes(record)
         self.assertEqual([record[f"node_{slot}_node_id"] for slot in range(1, 5)], ids[:2] + ["", ""])
         self.assertEqual(record["bt_action_nodes"], 2)
+        mixed = {
+            "required_nodes_json": json.dumps([{"node_id": "node_action_a"}, {"node_id": "node_condition_b"}]),
+            "node_1_node_id": "node_action_a", "node_2_node_id": "node_condition_b",
+            "node_3_node_id": "node_condition_stale",
+            "node_2_reviewer_notes": "note", "node_3_reviewer_notes": "stale note",
+        }
+        dataset._restrict_slots_to_required_nodes(mixed)
+        self.assertEqual(
+            (mixed["bt_action_nodes"], mixed["node_2_node_id"], mixed["node_2_reviewer_notes"],
+             mixed["node_3_node_id"], mixed["node_3_reviewer_notes"]),
+            (1, "node_condition_b", "note", "", ""),
+        )
 
 
 if __name__ == "__main__":

@@ -78,11 +78,15 @@ builder never falls back to them for evaluation episodes.
 The [selected-run ledger](../config/datasets/btaudit2_20261021_selected_runs.csv)
 records, for every evaluation episode and model configuration (3,248 rows), the
 selected sheet, the single replay attempt whose responses reproduce it, the
-saved BT hash, whether the run began after the episode's last BT regeneration,
+saved BT hash, a digest of the sheet's responses (`response_sha256`), whether the
+run began after the episode's last BT regeneration,
 whether its prompts quote the saved BT's nodes, whether prompt hashes and
 response quality are clean, and unchanged human definitions and values. Rebuild
 it with `python scripts/audit_btaudit2_selected_runs.py`; the visualization
-builder cross-checks sheet, attempt and response count against it. Dispositions:
+builder cross-checks sheet, attempt, response count and response digest against
+it, so a model sheet edited after the audit stops the build. Each cached CSV pair
+records the ledger hash in a `<csv>.build.json` stamp and is rebuilt when the
+ledger changes. Dispositions:
 
 | Disposition | Rows | Use |
 | --- | ---: | --- |
