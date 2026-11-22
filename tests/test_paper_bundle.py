@@ -211,6 +211,10 @@ class PaperBundleTests(unittest.TestCase):
         bounds = figure.get_tightbbox(renderer)
         self.assertGreaterEqual(bounds.y0, 0)
         self.assertLessEqual(bounds.y1, figure.get_figheight())
+        for axis in figure.axes:
+            label = axis.yaxis.label.get_window_extent(renderer)
+            self.assertGreaterEqual(label.y0, 0, axis.get_ylabel())
+            self.assertLessEqual(label.y1, figure.bbox.height, axis.get_ylabel())
 
     def test_standalone_family_accuracy_has_only_one_title(self):
         with plt.rc_context(bundle.STYLE):

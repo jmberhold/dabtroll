@@ -126,6 +126,30 @@ def _wrap(value: str, width: int) -> str:
     return "\n".join(textwrap.fill(line, width=width, break_long_words=False) for line in value.splitlines())
 
 
+def _fit_ylabels(figure: plt.Figure, axes: list) -> bool:
+    """Wrap y labels that run off the canvas; they are centered on their axes and otherwise clipped."""
+    renderer = figure.canvas.get_renderer()
+    margin = 0.05 * figure.dpi
+    ceiling = figure.bbox.height - margin
+
+    def clipped(label) -> bool:
+        extent = label.get_window_extent(renderer)
+        return extent.y0 < margin or extent.y1 > ceiling
+
+    changed = False
+    for axis in axes:
+        label = axis.yaxis.label
+        if not label.get_text() or not clipped(label):
+            continue
+        text = " ".join(label.get_text().split())
+        for width in range(min(len(text), 42) - 1, 7, -1):
+            label.set_text(textwrap.fill(text, width=width, break_long_words=False))
+            if not clipped(label):
+                break
+        changed = True
+    return changed
+
+
 def prepare_figure(figure: plt.Figure, name: str, title: str, layout: str = "stacked",
                    compact_header: bool = True) -> None:
     """Use physical manuscript width and a font floor, rather than oversized art scaled down."""
@@ -244,25 +268,33 @@ def prepare_figure(figure: plt.Figure, name: str, title: str, layout: str = "sta
             axis.set_title(_wrap(axis.get_title().replace("\n", " "), 34), fontsize=11 * scale, pad=14)
     heading.set_fontsize(12 * scale)
     bottom = 0.16 if horizontal and name == "timing" else 0.10 if horizontal else 0.075
-    figure.tight_layout(rect=(0.015, bottom, 0.985, 0.91 if horizontal else 0.94),
-                        pad=1.2, h_pad=2.0, w_pad=2.0)
-    figure.canvas.draw()
-    if compact_header:
-        renderer = figure.canvas.get_renderer()
-        top = max(
-            (axis.title if axis.get_title() else axis).get_window_extent(renderer).y1
-            for axis in axes
-        ) / figure.dpi
-        heading_height = heading.get_window_extent(renderer).height / figure.dpi
-        old_height = figure.get_figheight()
-        height = top + heading_height + 0.18 * scale
-        positions = [axis.get_position().frozen() for axis in axes]
-        figure.set_size_inches(figure.get_figwidth(), height)
-        for axis, position in zip(axes, positions):
-            axis.set_position((position.x0, position.y0 * old_height / height,
-                               position.width, position.height * old_height / height))
-        heading.set_y(1 - 0.08 * scale / height)
+    full_size = tuple(figure.get_size_inches())
+
+    def lay_out() -> None:
+        figure.set_size_inches(*full_size)
+        figure.tight_layout(rect=(0.015, bottom, 0.985, 0.91 if horizontal else 0.94),
+                            pad=1.2, h_pad=2.0, w_pad=2.0)
         figure.canvas.draw()
+        if compact_header:
+            renderer = figure.canvas.get_renderer()
+            top = max(
+                (axis.title if axis.get_title() else axis).get_window_extent(renderer).y1
+                for axis in axes
+            ) / figure.dpi
+            heading_height = heading.get_window_extent(renderer).height / figure.dpi
+            old_height = figure.get_figheight()
+            height = top + heading_height + 0.18 * scale
+            positions = [axis.get_position().frozen() for axis in axes]
+            figure.set_size_inches(figure.get_figwidth(), height)
+            for axis, position in zip(axes, positions):
+                axis.set_position((position.x0, position.y0 * old_height / height,
+                                   position.width, position.height * old_height / height))
+            heading.set_y(1 - 0.08 * scale / height)
+            figure.canvas.draw()
+
+    lay_out()
+    if _fit_ylabels(figure, axes):
+        lay_out()
     if name == "case":
         paper.layout_case_frames(figure)
     if horizontal and name == "sequential":
@@ -332,8 +364,14 @@ def _write_figure(output: Path, stage: str, name: str, label: str, title: str,
     layouts = ("stacked", "side_by_side") if name in MULTIPANEL_NAMES else ("stacked",)
     for layout in layouts:
         prepare_figure(figure, name, title, layout=layout, compact_header=compact_header)
-        bounds = figure.get_tightbbox(figure.canvas.get_renderer())
-        if bounds.x0 < 0 or bounds.y0 < 0 or bounds.x1 > figure.get_figwidth() or bounds.y1 > figure.get_figheight():
+        renderer = figure.canvas.get_renderer()
+        bounds = figure.get_tightbbox(renderer)
+        # Tight bounds ignore axis labels longer than their axes, so check those extents directly.
+        labels = [text.get_window_extent(renderer) for axis in figure.axes
+                  for text in (axis.xaxis.label, axis.yaxis.label) if text.get_text()]
+        if (bounds.x0 < 0 or bounds.y0 < 0 or bounds.x1 > figure.get_figwidth() or bounds.y1 > figure.get_figheight()
+                or any(box.x0 < 0 or box.y0 < 0 or box.x1 > figure.bbox.width or box.y1 > figure.bbox.height
+                       for box in labels)):
             raise ValueError(f"{label} ({layout}): figure decorations extend outside the manuscript canvas")
         tail = "_side" if layout == "side_by_side" else ""
         with plt.rc_context(STYLE):

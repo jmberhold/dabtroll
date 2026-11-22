@@ -879,9 +879,7 @@ def plot_timing(results: PaperResults) -> plt.Figure:
     axis.set(ylabel="Auditor - human completion time (s)", title="B. Timing error for matched completions")
     axis.text(0.02, 0.02, "Negative = early; positive = late", transform=axis.transAxes, fontsize=9)
     figure.suptitle("Temporal alignment beyond binary completion")
-    figure.text(0.5, 0.01, "Stored source clocks: original Qwen3-VL timing requires reconciliation (see Stage 3D).",
-                ha="center", fontsize=9)
-    figure.tight_layout(rect=(0, 0.04, 1, 0.95))
+    figure.tight_layout(rect=(0, 0, 1, 0.95))
     return figure
 
 
