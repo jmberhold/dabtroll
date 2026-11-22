@@ -4,6 +4,7 @@ message: >-
   commit. The supplied manuscript has the same title and author list; no
   manuscript DOI, publication venue, or publication date is asserted here.
 type: software
+license: MIT
 title: "VLM-Initiated Behavior Tree Auditing of Robot VLA Execution (VIBTARVE)"
 authors:
   - family-names: Berhold
