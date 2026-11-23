@@ -73,7 +73,10 @@ class PaperBundleTests(unittest.TestCase):
             self.assertEqual((output / "data/episodes.csv").read_bytes(), original)
             self.assertEqual(catalog["source"]["sha256"], hashlib.sha256(original).hexdigest())
             self.assertEqual({e["stage"] for e in catalog["entries"]}, {"01", "02", "03"})
-            self.assertEqual(sum(e["kind"] == "figure" for e in catalog["entries"]), 11)
+            self.assertEqual(sum(e["kind"] == "figure" for e in catalog["entries"]), 12)
+            violin = next(e for e in catalog["entries"] if e["label"] == "f10_timing_violin")
+            self.assertEqual(violin["files"], {"pdf": "figures/f10_timing_violin.pdf",
+                                               "png": "figures/f10_timing_violin.png"})
             self.assertEqual(sum("tex" in e["files"] for e in catalog["entries"]), 5)
             self.assertEqual(len({e["label"] for e in catalog["entries"]}), len(catalog["entries"]))
             for entry in catalog["entries"]:
@@ -155,6 +158,7 @@ class PaperBundleTests(unittest.TestCase):
             ("mission", paper.plot_metric_by_scenario),
             ("nodes", lambda r: paper.plot_metric_by_scenario(r, "node")),
             ("sequential", paper.plot_sequential_completion), ("timing", paper.plot_timing),
+            ("timing_errors", paper.plot_timing_errors),
         )
         for name, factory in factories:
             layouts = ("stacked", "side_by_side") if name in bundle.MULTIPANEL_NAMES else ("stacked",)

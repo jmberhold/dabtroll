@@ -82,6 +82,11 @@ FIGURE_INFO = {
                    "Each bar partitions its auditor-dependent eligible cohort into four outcome categories. Node 2 requires model completion of Node 1; Node 3 requires both prior completions. Tables retain Node 4 when present."),
     "timing": ("f10_timing", "Completion-event temporal alignment",
                "Event-union shares use TP+FP+FN, excluding both-incomplete pairs and retaining missing clocks. Distributions use matched timestamps only; signed error is auditor minus human. " + CLOCK_NOTE),
+    "timing_errors": ("f10_timing_violin", "Completion timing error",
+                      "Standalone version of f10_timing panel B. Violins and boxplots of signed completion-time error "
+                      "(auditor minus human) for nodes both sides marked complete with matched timestamps; the shaded "
+                      "band is +/-2 s and n is matched completions per auditor. Unmatched and missing-clock events are "
+                      "reported in f10_timing panel A and d17_timing. " + CLOCK_NOTE),
 }
 TABLE_INFO = {
     "node_position_reconciliation": ("d21_node_positions", "Ordinal node comparability",
@@ -540,7 +545,8 @@ def export_stage(results: paper.PaperResults, source_csv: Path | str, output_dir
                    "family": paper.plot_node_family_performance,
                    "family_accuracy": paper.plot_node_family_balanced_accuracy},
             "03": {"mission": paper.plot_metric_by_scenario, "nodes": lambda r: paper.plot_metric_by_scenario(r, "node"),
-                   "sequential": paper.plot_sequential_completion, "timing": paper.plot_timing},
+                   "sequential": paper.plot_sequential_completion, "timing": paper.plot_timing,
+                   "timing_errors": paper.plot_timing_errors},
         }[stage]
         available = figures or {}
         for name, factory in factories.items():
