@@ -860,8 +860,8 @@ def plot_timing(results: PaperResults) -> plt.Figure:
 def plot_timing_errors(results: PaperResults) -> plt.Figure:
     """Matched-completion timing error violins only (panel B of plot_timing)."""
     figure, axis = plt.subplots(figsize=(9, 6))
-    _draw_timing_errors(axis, results, "Timing error for matched completions")
-    figure.suptitle("Completion timing error by auditor")
+    _draw_timing_errors(axis, results, "")
+    figure.suptitle("Completion timing error for matched completions")
     figure.tight_layout(rect=(0, 0, 1, 0.95))
     return figure
 
