@@ -22,6 +22,7 @@ import zmq
 from PIL import Image
 
 from mission_engine import (
+    VLLM_VIDEO_INPUTS,
     CloudClient,
     QwenContext,
     VllmClient,
@@ -105,7 +106,7 @@ def _vllm_launch_command(args: argparse.Namespace) -> List[str]:
         "--max-model-len", "4096",
         "--max-num-seqs", "1",
         "--gpu-memory-utilization", "0.90",
-        "--limit-mm-per-prompt", '{"image":1,"video":0}',
+        "--limit-mm-per-prompt", f'{{"image":{int(getattr(args, "vllm_max_images", 1))},"video":0}}',
         "--reasoning-parser", "qwen3",
         "--enforce-eager",
         "--skip-mm-profiling",
@@ -249,6 +250,15 @@ def main():
         "--vllm_timeout_s", type=float, default=120.0,
         help="HTTP timeout per vLLM request, in seconds.",
     )
+    ap.add_argument(
+        "--vllm_video_input", choices=VLLM_VIDEO_INPUTS, default="contact_sheet",
+        help="How multi-frame windows reach vLLM: one tiled contact sheet (historical default) "
+             "or separate chronological frames.",
+    )
+    ap.add_argument(
+        "--vllm_max_images", type=int, default=None,
+        help="Per-prompt image limit for vLLM (default 1 for contact_sheet, 10 for frames).",
+    )
     ap.add_argument("--max_new_tokens", type=int, default=1024)
     ap.add_argument(
         "--bt_max_new_tokens",
@@ -279,6 +289,12 @@ def main():
         help="Disable flash_attention_2 for Qwen3-VL even if available.",
     )
     args = ap.parse_args()
+    if args.vllm_max_images is None:
+        args.vllm_max_images = 10 if args.vllm_video_input == "frames" else 1
+    if args.vllm_max_images < 1:
+        ap.error("--vllm_max_images must be at least 1.")
+    if args.vllm_video_input == "contact_sheet" and args.vllm_max_images != 1:
+        ap.error("--vllm_video_input contact_sheet sends one image; omit --vllm_max_images.")
 
     def terminate(signum, _frame):
         raise SystemExit(128 + signum)
@@ -345,6 +361,8 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
             api_key=args.vllm_api_key,
             timeout_s=args.vllm_timeout_s,
             enable_thinking=bool(args.enable_thinking),
+            video_input=args.vllm_video_input,
+            max_images=args.vllm_max_images,
         )
         resources.callback(client._client.close)
         if args.vllm_external:
@@ -389,7 +407,8 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
     if qwen_ctx.vllm_client is not None:
         print(
             f"[mission_engine_server] backend=vllm base_url={qwen_ctx.vllm_client.base_url} "
-            f"served_model={qwen_ctx.vllm_client.model} video_input=contact_sheet "
+            f"served_model={qwen_ctx.vllm_client.model} video_input={qwen_ctx.vllm_client.video_input} "
+            f"max_images={qwen_ctx.vllm_client.max_images} "
             f"managed={vllm_process is not None} max_image_edge=512; "
             "GPU/runtime metadata below describes this ZMQ process, not vLLM"
         )
@@ -499,7 +518,8 @@ def _serve(args: argparse.Namespace, resources: ExitStack) -> None:
                         "vllm_model": qwen_ctx.vllm_client.model if qwen_ctx.vllm_client else None,
                         "vllm_managed": vllm_process is not None,
                         "vllm_pid": vllm_process.pid if vllm_process is not None else None,
-                        "video_input": "contact_sheet" if qwen_ctx.vllm_client else "frames",
+                        "video_input": qwen_ctx.vllm_client.video_input if qwen_ctx.vllm_client else "frames",
+                        **({"vllm_max_images": qwen_ctx.vllm_client.max_images} if qwen_ctx.vllm_client else {}),
                         "enable_thinking": bool(args.enable_thinking),
                         "device_arg": "remote" if is_cloud else args.device,
                         "torch_version": torch_version,

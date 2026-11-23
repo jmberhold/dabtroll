@@ -503,7 +503,19 @@ Health/runtime Torch, CUDA, and Transformers fields describe the ZMQ process,
 Expect `starting managed vLLM`, then `managed vLLM ready`, followed by
 `bound tcp://127.0.0.1:5560`. Model logs include `family=qwen3_8`,
 `backend=vllm`, `served_model=qwen38`, `managed=True`, and
-`video_input=contact_sheet`. If the child later exits, the mission server also
+`video_input=contact_sheet max_images=1`.
+
+By default, Qwen3.8 receives each multi-frame window as one tiled contact sheet,
+which is how the original `qwen38_v4` runs were made. To send each frame as its
+own image (as Luna, Qwen3-VL and Qwen3.5 do), add
+`--vllm_video_input frames --vllm_max_images 10`. The managed vLLM is then
+started with `--limit-mm-per-prompt '{"image":10,"video":0}'`. Health and logs
+report `video_input=frames` and `vllm_max_images=10`. A request with more frames
+than the limit fails before it is sent to vLLM. With the default 4096-token
+context, ten 256x256 frames plus the `qwen38_v4` prompt fit, with each call
+taking about 5 s on the RTX A5000.
+
+If the child later exits, the mission server also
 exits with an error. Normal shutdown sends SIGTERM to its owned vLLM process
 group, escalating to SIGKILL if the child does not exit within 15 seconds.
 
@@ -750,8 +762,9 @@ Runs image + text generation from image input and `prompt_text`.
 
 5. `text_video` (or `video`)
 Runs multi-frame evaluation from frame list + `prompt_text`.
-With `qwen38`, frames are presented as one chronological contact sheet, not
-native video or separate images.
+With `qwen38`, frames are presented by default as one chronological contact
+sheet, not native video. With `--vllm_video_input frames`, they are separate
+images in the supplied order.
 With `luna`/`cloud`, frames are separate images in the supplied order.
 
 6. Fallback scene description mode

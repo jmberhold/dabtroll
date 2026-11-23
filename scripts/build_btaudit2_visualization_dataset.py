@@ -75,7 +75,8 @@ MODEL_SPECS = (
     ModelSpec("molmo2", "molmo2", 5, ("molmo2",)),
     ModelSpec("gemma4", "gemma4", 6, ("gemma4",)),
 )
-QWEN38_SPEC = ModelSpec("qwen38", "qwen38", 0, (), "qwen38_v4")
+# Evaluation episodes use the 10-frame separate-image replay; episode 1 keeps the 8-frame contact-sheet sheet.
+QWEN38_SPEC = ModelSpec("qwen38", "qwen38", 0, (), "qwen38_v4", evaluation_sheet_name="qwen38_v4_10f")
 LUNA6_SPEC = ModelSpec("luna6", "luna6", 0, (), "luna6_v5")
 ALL_MODEL_SPECS = MODEL_SPECS + (QWEN38_SPEC, LUNA6_SPEC)
 CURRENT_SCHEMA_COLUMNS = {

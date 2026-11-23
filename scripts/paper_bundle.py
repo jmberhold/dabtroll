@@ -46,14 +46,14 @@ CLOCK_NOTE = (
     "recordings; the per-run audit is in the selected-run ledger. Nodes are matched by saved node ID "
     "bound to ordinal positions, and every primary run's node count equals the reviewed contract. "
     "Whole-mission agreement requires every required node complete on both sides. "
-    "Qwen3-VL, Qwen3.5, and Luna 6 completion times scale simulator time to the measured recording "
+    "Qwen3-VL, Qwen3.5, Qwen3.8, and Luna 6 completion times scale simulator time to the measured recording "
     "duration, rounded as in the replay writer; seven recordings whose video duration could not be "
-    "measured have blank video times for these three auditors, so no timing is scored there "
-    "(none of the seven is human-reviewed). Molmo2, Gemma 4, and Qwen3.8 times come from their saved "
+    "measured have blank video times for these four auditors, so no timing is scored there "
+    "(none of the seven is human-reviewed). Molmo2 and Gemma 4 times come from their saved "
     "review sheets. Luna calibration uses the duration-ratio convention, not new visual event "
     "annotations; original workbook times remain in stored_video_time fields. "
-    "Auditors received different inputs and prompts: Luna 6 uses ten separate images per full window "
-    "(3.6 s first-to-last), Qwen3.8 uses eight-frame contact sheets (2.8 s first-to-last), and prompts "
+    "Qwen3-VL, Qwen3.5, Qwen3.8, and Luna 6 receive ten separate images per full window "
+    "(3.6 s first-to-last); Molmo2 and Gemma 4 receive eight-frame windows. Prompts "
     "and token budgets are model-specific, so differences are not a controlled input-matched comparison. "
     "Local/cloud latency is not a controlled hardware benchmark. "
     "Simulator success, human planned-path completion, and auditor judgments remain separate signals."
@@ -600,9 +600,11 @@ def export_prompt_development(
     )
     descriptions = {
         "qwen38": common + "Qwen3.8 v1 used 256 output tokens for 22 episodes and 1024 for two successful retries. "
-        "V4 was selected for evaluation. Historical Qwen3.8 uses eight-frame contact sheets.",
+        "V4 was selected for evaluation. These development runs used eight-frame contact sheets; the evaluation "
+        "replay keeps the v4 prompt but sends ten separate images per full window.",
         "luna6": common + "Luna 6 v5 was selected for evaluation. Luna uses ten separate images per full window; "
-        "these input conditions differ from Qwen3.8 and are not a controlled input-matched comparison. "
+        "these development input conditions differ from Qwen3.8's contact sheets and are not a controlled "
+        "input-matched comparison. "
         "These tables compare completion decisions, not source-clock timing accuracy.",
     }
     entries, sections = [], []

@@ -161,6 +161,9 @@ class CloudClient:
         return text
 
 
+VLLM_VIDEO_INPUTS = ("contact_sheet", "frames")
+
+
 def _prepare_vllm_image(images: List[Image.Image]) -> Image.Image:
     """Fit one image or a labeled chronological contact sheet into 512 pixels."""
     from PIL import Image, ImageDraw, ImageOps
@@ -201,11 +204,19 @@ class VllmClient:
     api_key: str = field(default="EMPTY", repr=False)
     timeout_s: float = 120.0
     enable_thinking: bool = False
+    # "contact_sheet" tiles a multi-frame window into one image; "frames" sends each frame
+    # as its own image, up to max_images (which must match vLLM's --limit-mm-per-prompt).
+    video_input: str = "contact_sheet"
+    max_images: int = 1
     _client: OpenAI = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         from openai import OpenAI
 
+        if self.video_input not in VLLM_VIDEO_INPUTS:
+            raise ValueError(f"vLLM video_input must be one of {VLLM_VIDEO_INPUTS}.")
+        if int(self.max_images) < 1:
+            raise ValueError("vLLM max_images must be at least 1.")
         self.base_url = self.base_url.rstrip("/")
         parsed = urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -234,8 +245,16 @@ class VllmClient:
         if max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be positive.")
         content: List[ChatCompletionContentPartParam] = []
-        if images:
-            image = _prepare_vllm_image(images)
+        separate = self.video_input == "frames"
+        if separate and len(images) > int(self.max_images):
+            raise ValueError(
+                f"{len(images)} frames exceed the vLLM per-prompt image limit of {self.max_images}; "
+                "reduce the status window or raise --vllm_max_images."
+            )
+        prepared = [_prepare_vllm_image([image]) for image in images] if separate else (
+            [_prepare_vllm_image(images)] if images else []
+        )
+        for image in prepared:
             buffer = io.BytesIO()
             image.save(buffer, format="JPEG", quality=90)
             encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -243,7 +262,7 @@ class VllmClient:
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{encoded}"},
             })
-        if len(images) > 1:
+        if len(images) > 1 and not separate:
             prompt_text = (
                 f"The image is a contact sheet of {len(images)} chronological frames, "
                 "ordered left-to-right, then top-to-bottom. Frame 1 is oldest; "
