@@ -126,6 +126,24 @@ class VllmTests(unittest.TestCase):
         self.assertGreater(image.getpixel((100, 350))[2], 240)
         self.assertEqual(self.requests[-1][2]["max_tokens"], 91)
 
+    def test_frames_mode_sends_each_frame_as_its_own_image(self):
+        self.client.video_input = "frames"
+        self.client.max_images = 3
+        frames = [Image.new("RGB", (256, 256), color) for color in ("red", "green", "blue")]
+        self.assertEqual(mission_engine.generate_text_video_response(self.ctx, frames, "status", 91), "OK")
+        content = self.requests[-1][2]["messages"][0]["content"]
+        self.assertEqual([item["type"] for item in content], ["image_url"] * 3 + ["text"])
+        self.assertEqual(content[-1]["text"], "status")
+        decoded = [Image.open(io.BytesIO(base64.b64decode(item["image_url"]["url"].split(",", 1)[1])))
+                   for item in content[:3]]
+        self.assertEqual([image.size for image in decoded], [(256, 256)] * 3)
+        self.assertGreater(decoded[0].getpixel((10, 10))[0], 240)
+        self.assertGreater(decoded[2].getpixel((10, 10))[2], 240)
+        sent = len(self.requests)
+        with self.assertRaisesRegex(ValueError, "image limit of 3"):
+            self.client.generate("status", frames + frames[:1], 91)
+        self.assertEqual(len(self.requests), sent)
+
     def test_invalid_configuration_and_model_mismatch(self):
         for timeout in (0, -1, float("inf"), float("nan")):
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):
@@ -307,6 +325,8 @@ class ManagedVllmTests(unittest.TestCase):
         self.assertNotIn("LD_LIBRARY_PATH", start.call_args.kwargs["env"])
         self.assertTrue(start.call_args.kwargs["start_new_session"])
         self.client.check_health.assert_called_once_with(timeout_s=2.0)
+        self.args.vllm_max_images = 10
+        self.assertIn('{"image":10,"video":0}', mission_server._vllm_launch_command(self.args))
 
     def test_startup_exit_timeout_and_model_errors_clean_up(self):
         for error in ("exit", "timeout", "model"):

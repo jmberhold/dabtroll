@@ -34,20 +34,24 @@ evaluated v4 on the 464 existing episode-2--21 recordings. Keep those cohorts
 separate when reporting prompt selection versus evaluation. Do not describe
 these observational runs as a randomized train/test split.
 
-The final v4 provenance audit found **464 saved model sheets and 3,690 clean
-status responses**, using hash
+The final v4 provenance audit of the original contact-sheet run found **464 saved
+model sheets and 3,690 clean status responses** (`qwen38_v4`), using hash
 `75adbbaf49c5f7ce77a73229d97d44716e750c48f257f67309dc1805b4c1da50`
-and 1024 output tokens. "Clean" means successful status-response parsing/transport,
+and 1024 output tokens. The same unchanged prompt was replayed with ten separate
+frames per window (`qwen38_v4_10f`); its audit found **464 sheets and 3,483 clean
+status responses**, and it is the Qwen3.8 evaluation source.
+"Clean" means successful status-response parsing/transport,
 not correct visual judgments or completed human labeling. The v1 tuning baseline
 has mixed budgets (22 recordings at 256 tokens, two at 1024); do not claim a
 strictly matched-budget five-prompt comparison.
 
 The October 23 timing audit also found that all 488 local recording summaries
 specified an explicit **eight-frame** window despite a four-second target.
-The saved Qwen3.8 replay configs used that count: normal windows span 2.8
+The saved original Qwen3.8 replay configs used that count: normal windows span 2.8
 simulation seconds first-to-last at 0.4 seconds per saved step. Molmo2, Gemma 4
 and the original-prompt Qwen3.5 sheet also used windows of at most eight frames;
-the corrected Qwen3-VL and Qwen3.5 replays and Luna 6 use ten-frame windows.
+the corrected Qwen3-VL, Qwen3.5 and Qwen3.8 (`qwen38_v4_10f`) replays and Luna 6
+use ten-frame windows.
 These results remain measurements of their recorded input conditions, not the
 corrected nominal four-second protocol. See the
 [timing contract and correction](status_prompt_experiments.md#timing-contract-and-historical-eight-frame-runs)
@@ -247,8 +251,11 @@ not a consecutive-failure test. Preserve raw labels alongside effective
 transitions and document this policy in comparisons.
 
 Contact-sheet inference (one 512-pixel-bounded chronological image) differs
-from separate-frame video inference. Record that input transformation, thinking
-mode, sampling settings and token budget, not just the serving alias `qwen38`.
+from separate-frame video inference. The evaluation Qwen3.8 replay sends ten
+separate 512-pixel-bounded images (`video_input = frames` in replay provenance);
+the episode-1 development runs used contact sheets. Record that input
+transformation, thinking mode, sampling settings and token budget, not just the
+serving alias `qwen38`.
 
 ## Paper-results notebooks
 
@@ -294,9 +301,12 @@ The primary evaluation tables include Qwen3-VL (`qwen3_v1_BTfix`), Qwen3.5's
 model-specific prompt (`qwen35_mod1_v1_BTfix`), Molmo2, Gemma 4, **Qwen3.8**, and
 **Luna 6**. Stage 2 also includes Qwen3.5's original prompt as a historical
 supplement restricted to runs on the final BT. Qwen3.8 uses only its selected prompt:
-`qwen38_*` and `node_<slot>_qwen38_*` CSV fields are sourced from the historical
-`qwen38_v4` workbook sheet. That sheet name is retained as provenance, not
-shown as a separate performance-model name. Qwen3.8 v1--v5 development
+`qwen38_*` and `node_<slot>_qwen38_*` CSV fields are sourced from the
+`qwen38_v4_10f` workbook sheet for evaluation episodes (the same v4 prompt
+replayed with ten separate frames per window on each recording's own BT); the
+original eight-frame contact-sheet `qwen38_v4` sheets remain in the workbooks as
+historical provenance. Sheet names are retained as provenance, not
+shown as separate performance-model names. Qwen3.8 v1--v5 development
 comparisons are not part of this visualization export. Source experiments
 remain unchanged. Replay provenance exports preserve attempts separately; snapshot-hash
 agreement does not certify response quality or establish which attempt wrote
@@ -307,9 +317,10 @@ Selected Luna v5 uses `luna6_*` and `node_<slot>_luna6_*` CSV fields, sourced
 exclusively from `luna6_v5`. The completed full run covers all 464 evaluation
 recordings with 9,469 clean responses; this is coverage, not an accuracy claim.
 Schema v4 includes its observations and cloud model/API/reasoning provenance.
-Luna's full windows contain ten separate images (3.6 seconds first-to-last);
-historical Qwen3.8 uses eight-frame contact sheets (2.8 seconds). Preserve this
-input-setting difference and the clock caveats when interpreting results.
+Luna's full windows contain ten separate images (3.6 seconds first-to-last), as
+do the Qwen3-VL, Qwen3.5 and Qwen3.8 evaluation replays; Molmo2 and Gemma 4 use
+eight-frame windows (2.8 seconds). Preserve this input-setting difference and
+the clock caveats when interpreting results.
 
 **Luna video-clock calibration:** the original Luna replay environment had
 neither OpenCV nor PyAV, so its workbook `video_time_m:ss` values fell back to
@@ -323,10 +334,10 @@ clock, scale and rounding provenance. Missing frame indices fail explicitly.
 Unmeasurable videos emit a warning and receive `unavailable_video_duration`:
 numeric `video_time_s` is missing and no timing is scored. Seven evaluation
 videos are unreadable; none belongs to the 120 confirmed reviewed episodes. The
-same seven recordings have blank video times for the corrected Qwen3-VL and
-Qwen3.5 replays, which write `simulation_no_video` clocks for them; their
-observations carry `timing_basis = unavailable_video_duration` (Molmo2, Gemma 4
-and Qwen3.8 retain stored sheet times for these recordings).
+same seven recordings have blank video times for the corrected Qwen3-VL,
+Qwen3.5 and Qwen3.8 replays, which write `simulation_no_video` clocks for them; their
+observations carry `timing_basis = unavailable_video_duration` (Molmo2 and
+Gemma 4 retain stored sheet times for these recordings).
 This is the established duration-ratio convention, not decoded
 per-frame event annotation or an assumption that simulation and playback
 seconds are equal. Source workbooks and completion classifications are unchanged.
@@ -550,7 +561,7 @@ python scripts/audit_btaudit2_dataset.py \
   --dataset-root data/logs/btaudit2 \
   --manifest config/datasets/btaudit2_20261021_manifest.txt \
   --episode-min 2 --episode-max 21 --expected-count 464 \
-  --review-sheet qwen38_v4 \
+  --review-sheet qwen38_v4_10f \
   --prompt-sha256 75adbbaf49c5f7ce77a73229d97d44716e750c48f257f67309dc1805b4c1da50 \
   --max-new-tokens 1024 \
   --output-dir data/audits/v4_$(date -u +%Y%m%dT%H%M%SZ)

@@ -90,16 +90,20 @@ Qwen3.8 prompt experiment; do not attribute them to that experiment.
 The supplied abstract's best finalized scores predate the corrected-BT replays.
 Collection originally regenerated the behavior tree only every 4-6 episodes; it
 now produces one per episode, and Qwen3-VL and Qwen3.5 were replayed on every
-evaluation recording against its own BT. The refreshed dataset exports compare all six
+evaluation recording against its own BT. Qwen3.8 was then replayed with ten separate
+frames per window (`qwen38_v4_10f`, unchanged v4 prompt) instead of eight-frame contact
+sheets. The refreshed dataset exports compare all six
 primary auditors on each recording's own BT. Qwen3-VL and Qwen3.5 therefore
-change (for example, node-level balanced accuracy is now 0.734 and 0.802), while
-Molmo2, Gemma 4, Qwen3.8 and Luna 6 are unchanged. Reconcile manuscript numbers
+change (for example, node-level balanced accuracy is now 0.734 and 0.802), as does
+Qwen3.8 (mission-level balanced accuracy 0.813, previously 0.709; node-level 0.743,
+previously 0.737), while Molmo2, Gemma 4 and Luna 6 are unchanged. Reconcile manuscript numbers
 with the refreshed [paper bundle](../data/derived/vibtarve_paper/index.html)
 before citing them.
 
 The local snapshot also includes 24 episode-1 prompt-tuning recordings, separate
 from the 464 episode-2--21 evaluation recordings. Its verified 464/464 v4 model
-coverage and 3,690 clean responses establish saved inference coverage, not the
+coverage (3,483 clean responses for the ten-frame evaluation replay; 3,690 for the
+original contact-sheet run) establishes saved inference coverage, not the
 paper's human-reviewed counts or accuracy claims.
 
 ## Documentation map

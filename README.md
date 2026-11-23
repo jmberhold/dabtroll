@@ -50,11 +50,13 @@ model weights and local environments are **not bundled with Git**.
 
 The 2026-10-21 snapshot has 488 recordings: 24 episode-1 prompt-tuning recordings
 and 464 episode-2--21 recordings. Selected Qwen3.8 prompt v4 has verified model
-coverage on all 464 evaluation recordings (3,690 clean responses). Coverage is
+coverage on all 464 evaluation recordings (3,483 clean responses from the
+ten-separate-frame `qwen38_v4_10f` replay). Coverage is
 not an accuracy claim or proof of complete human review. Selected Luna v5 also
 covers all 464 evaluation recordings (9,469 clean responses) and is integrated
-as **Luna 6** in the same CSV-driven paper workflow. Its ten separate input
-frames differ from the historical Qwen3.8 eight-frame contact sheets.
+as **Luna 6** in the same CSV-driven paper workflow. Qwen3-VL, Qwen3.5,
+Qwen3.8 and Luna 6 receive ten separate frames per window; Molmo2 and Gemma 4
+receive eight-frame windows.
 Every primary auditor is compared on each recording against that recording's own
 behavior tree: collection moved from one BT per 4-6 episodes to one per episode,
 so Qwen3-VL and Qwen3.5 were replayed on all 464 evaluation recordings
@@ -196,9 +198,11 @@ no second terminal or manually managed service is required. Stop any old
 mission/vLLM service first to free GPU 1 and ports 5560/8000. To intentionally
 reuse an existing endpoint instead, pass `--vllm_external`.
 
-Simulation still connects to ZMQ port **5560**, not HTTP port 8000. Multi-frame
-Qwen3.8 status requests use one labeled chronological contact sheet to retain
-the tested vLLM one-image limit; this differs from separate-frame evaluation.
+Simulation still connects to ZMQ port **5560**, not HTTP port 8000. By default,
+multi-frame Qwen3.8 status requests use one labeled chronological contact sheet
+(vLLM one-image limit). Pass `--vllm_video_input frames` (with
+`--vllm_max_images 10`, the default for that mode) to send each frame as its own
+image, as in the `qwen38_v4_10f` evaluation replay.
 Existing Transformers model startup commands are unchanged.
 
 Data management and semantic indexing details are documented in [docs/knowledge_base.md](docs/knowledge_base.md).

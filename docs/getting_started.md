@@ -182,7 +182,8 @@ add `--episode-index-min 2 --episode-index-max 21`. Both paths use the same
 established builder, not a separate paper-data extractor.
 
 Qwen3.8 fields use `qwen38_*` and `node_<slot>_qwen38_*`, sourced exclusively
-from the immutable `qwen38_v4` sheet. Other Qwen3.8 revisions are not exported.
+from the `qwen38_v4_10f` sheet (the v4 prompt with ten separate frames per
+window) for evaluation episodes. Other Qwen3.8 revisions are not exported.
 The source-sheet name remains in `qwen38_review_sheet` as provenance; displayed
 performance labels are **Qwen3.8**. The existing cached loader automatically
 rebuilds older schemas missing these fields. Selected Luna v5 similarly uses
@@ -197,8 +198,9 @@ the original Luna environment without editing workbooks or repeating inference.
 Seven unreadable, unreviewed videos retain completion decisions but have
 explicitly unavailable numeric video times; no duration is inferred for them.
 Other Luna revisions remain tuning evidence, not evaluation models.
-Luna uses ten separate images per full window versus Qwen3.8's historical
-eight-frame contact sheets; this is not a controlled input-matched comparison.
+Luna, Qwen3-VL, Qwen3.5 and Qwen3.8 use ten separate images per full window,
+while Molmo2 and Gemma 4 use eight-frame windows; prompts and token budgets are
+model-specific, so this is not a controlled input-matched comparison.
 Use `--force` (or
 `force_rebuild=True` in Python) after editing source workbooks; schema
 compatibility alone does not detect content edits. The paper CSV reader

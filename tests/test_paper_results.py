@@ -494,7 +494,7 @@ class PaperResultsTests(unittest.TestCase):
             sheet.title = "Sheet1_BT_Node_Review"
             sheet.append(["node_order", "node_id", "reviewer_completion_time_m:ss"])
             sheet.append([1, "node_condition_ready", "0:00"])
-            model = workbook.create_sheet("qwen38_v4")
+            model = workbook.create_sheet("qwen38_v4_10f")
             model.append(["node_id", "model_status", "video_time_m:ss"])
             model.append(["node_condition_ready", "complete", "0:00"])
             for sheet_name, status in (("luna6_v4", "running"), ("luna6_v5", "complete")):
@@ -539,7 +539,7 @@ class PaperResultsTests(unittest.TestCase):
             self.assertEqual(episodes.iloc[0]["qwen38_observation_count"], 1)
             self.assertEqual(len(json.loads(episodes.iloc[0]["qwen38_observations_json"])), 1)
             self.assertFalse(any(column.startswith("qwen38_v") for column in episodes))
-            self.assertEqual(episodes.iloc[0]["qwen38_review_sheet"], "qwen38_v4")
+            self.assertEqual(episodes.iloc[0]["qwen38_review_sheet"], "qwen38_v4_10f")
             self.assertEqual(episodes.iloc[0]["luna6_review_sheet"], "luna6_v5")
             self.assertEqual(episodes.iloc[0]["luna6_observation_count"], 1)
             self.assertEqual(

@@ -666,12 +666,14 @@ Every primary run has the reviewed node count. Unreached positions inside a cont
 remain incomplete; missing model episodes are not negatives. Positional agreement does not
 establish semantic equivalence of auditor and human wording.
 
-Machine/simulation time differs from review-video time. Qwen3-VL, Qwen3.5 and Luna video
-times are simulation time scaled to the measured video duration; original timestamps and
+Machine/simulation time differs from review-video time. Qwen3-VL, Qwen3.5, Qwen3.8 and Luna
+video times are simulation time scaled to the measured video duration; original timestamps and
 timing-basis metadata are retained. Seven unreadable, unreviewed videos have no video time
-for those three auditors. Molmo2, Gemma 4 and Qwen3.8 retain stored sheet times.
-Qwen3-VL, Qwen3.5 and Luna use ten-frame windows; Molmo2, Gemma 4 and Qwen3.8 use at most
-eight frames (Qwen3.8 as one labeled contact sheet). Prompts and token budgets are
+for those four auditors. Molmo2 and Gemma 4 retain stored sheet times.
+Qwen3-VL, Qwen3.5, Qwen3.8 and Luna receive ten separate frames per window; Molmo2 and
+Gemma 4 use at most eight frames. Qwen3.8 evaluation uses the `qwen38_v4_10f` replay of the
+unchanged v4 prompt; its episode-1 prompt development used eight-frame contact sheets.
+Prompts and token budgets are
 model-specific, so these are not controlled input-matched model comparisons.
 
 Unreadable videos are excluded from playable media, not from episode/node/annotation

@@ -40,7 +40,7 @@ DEFAULT_OUTPUT = PROJECT_ROOT / "config" / "datasets" / "btaudit2_20261021_selec
 SOURCES = {
     "qwen3": ("qwen3_v1_BTfix_*", "qwen3_v1"),
     "qwen35": ("qwen35_mod1_v1_BTfix_*", "qwen35_mod1_v1"),
-    "qwen38": ("qwen38_v4_*", "qwen38_v4"),
+    "qwen38": ("qwen38_v4_10f_*", "qwen38_v4"),
     "luna6": ("luna6_v5_*", "luna6_v5"),
     "molmo2": ("molmo2_8b_*", None),
     "gemma4": ("gemma4_e4b_it_*", None),

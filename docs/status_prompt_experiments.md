@@ -42,7 +42,8 @@ For BT-corrected replays, select `qwen3_v1` with Qwen3 and
 `qwen35_mod1_v1` with Qwen3.5 Mod1. The episode `missionengine.jsonl` request
 records preserve the rendered prompt text, which was used to verify these
 snapshots; older outputs do not always record a prompt ID or source hash.
-The corrected replays wrote sheets `qwen3_v1_BTfix` and `qwen35_mod1_v1_BTfix`
+The corrected replays wrote sheets `qwen3_v1_BTfix`, `qwen35_mod1_v1_BTfix` and
+(ten separate frames, unchanged v4 prompt) `qwen38_v4_10f`
 for all 464 evaluation recordings; the
 [selected-run ledger](../config/datasets/btaudit2_20261021_selected_runs.csv)
 records which attempt produced each sheet. The original Qwen3.5 prompt sheet
@@ -71,7 +72,9 @@ eight-frame windows, plus partial/startup or single-image requests. The audited
 Qwen3.8 v1-v5 and Luna episode-1 configs all specify five-step cadence and eight
 frames. These measurements remain historical **eight-frame results**; they
 must not be relabeled as corrected four-second-window results. Their normal
-eight-image windows span 2.8 simulation seconds first-to-last.
+eight-image windows span 2.8 simulation seconds first-to-last. The evaluation
+Qwen3.8 results instead come from the ten-frame `qwen38_v4_10f` replay; Molmo2
+and Gemma 4 evaluation results remain eight-frame measurements.
 
 The live simulation now honors seconds-derived windows unless an explicit
 positive `--status-window-frames` is supplied. For Python replay:
@@ -253,7 +256,8 @@ and may incur charges. Health checks are local configuration checks, not proof
 of provider access or correct visual judgments. Confirm the batch's saved
 `server_health` reports the intended `cloud_model`, API, reasoning setting, and
 frame representation. Keep these inference settings fixed across revisions;
-do not conflate the separate-frame Luna input with Qwen3.8's contact sheet.
+do not conflate the separate-frame Luna input with the contact sheets used in
+Qwen3.8 prompt development.
 
 For a **single-recording smoke test**, create a text manifest containing only
 the chosen episode's directory, one absolute path per line. Then run:
@@ -506,7 +510,13 @@ then stop the batch with the failed and unattempted episodes in the pending
 manifest. A healthy server is required again before resuming. Do not confuse
 backend failure with evidence that a prompt is visually inaccurate.
 
-Qwen3.8 uses one labeled contact sheet for each multi-frame window. Keep that
+The original Qwen3.8 runs (`qwen38_v4`) used one labeled contact sheet for each
+8-frame window and are kept as historical provenance. The evaluation source is
+the 10-frame separate-image replay (server flag
+`--vllm_video_input frames --vllm_max_images 10`; replay
+`STATUS_EVAL_SECONDS=2 STATUS_WINDOW_SECONDS=4`), which uses the same unchanged
+prompt and writes to the separate sheet `qwen38_v4_10f`, so the frame
+input matches Qwen3-VL, Qwen3.5 and Luna 6. Keep that
 presentation, frame window, generation settings, and model fixed across prompt
 revisions. Replaying through BT transitions means different judgments can
 advance to different nodes/windows; these are sequential BT replays, not a
@@ -603,6 +613,8 @@ progress; `run_summary.txt` is written when the runner exits. Keep a persistent
 console log for long-running launches. If interrupted, reconcile clean saved
 results and existing sheets before constructing a remaining-only manifest;
 never automatically repeat paid successes or replace existing sheets.
-The full Luna run retains corrected ten-frame timing, unlike the historical
-eight-frame Qwen run, so the matched cohort alone does not make that comparison
+The full Luna run retains corrected ten-frame timing, unlike the original
+eight-frame contact-sheet Qwen3.8 run (since replaced in evaluation by the
+ten-frame `qwen38_v4_10f` replay); prompts and inference settings still differ,
+so the matched cohort alone does not make that comparison
 a controlled prompt/model-only experiment.
