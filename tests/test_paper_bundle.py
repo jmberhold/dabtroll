@@ -73,7 +73,10 @@ class PaperBundleTests(unittest.TestCase):
             self.assertEqual((output / "data/episodes.csv").read_bytes(), original)
             self.assertEqual(catalog["source"]["sha256"], hashlib.sha256(original).hexdigest())
             self.assertEqual({e["stage"] for e in catalog["entries"]}, {"01", "02", "03"})
-            self.assertEqual(sum(e["kind"] == "figure" for e in catalog["entries"]), 11)
+            self.assertEqual(sum(e["kind"] == "figure" for e in catalog["entries"]), 12)
+            violin = next(e for e in catalog["entries"] if e["label"] == "f10_timing_violin")
+            self.assertEqual(violin["files"], {"pdf": "figures/f10_timing_violin.pdf",
+                                               "png": "figures/f10_timing_violin.png"})
             self.assertEqual(sum("tex" in e["files"] for e in catalog["entries"]), 5)
             self.assertEqual(len({e["label"] for e in catalog["entries"]}), len(catalog["entries"]))
             for entry in catalog["entries"]:
@@ -155,6 +158,7 @@ class PaperBundleTests(unittest.TestCase):
             ("mission", paper.plot_metric_by_scenario),
             ("nodes", lambda r: paper.plot_metric_by_scenario(r, "node")),
             ("sequential", paper.plot_sequential_completion), ("timing", paper.plot_timing),
+            ("timing_errors", paper.plot_timing_errors),
         )
         for name, factory in factories:
             layouts = ("stacked", "side_by_side") if name in bundle.MULTIPANEL_NAMES else ("stacked",)
@@ -174,6 +178,14 @@ class PaperBundleTests(unittest.TestCase):
                 bundle.prepare_figure(figure, name, "Representative execution frames")
                 self.assert_header_gap(figure)
                 plt.close(figure)
+
+    def test_standalone_timing_violin_has_single_title(self):
+        with plt.rc_context(bundle.STYLE):
+            figure = paper.plot_timing_errors(prompt_fixture())
+            bundle.prepare_figure(figure, "timing_errors", bundle.FIGURE_INFO["timing_errors"][1])
+            self.assertEqual([axis.get_title() for axis in figure.axes], [""])
+            self.assertEqual(figure.get_suptitle(), "Completion timing error")
+            plt.close(figure)
 
     def test_node_family_color_scale_survives_publication_layouts(self):
         results = prompt_fixture()
@@ -202,9 +214,10 @@ class PaperBundleTests(unittest.TestCase):
     def assert_header_gap(self, figure, scale=1):
         renderer = figure.canvas.get_renderer()
         heading = figure._suptitle.get_window_extent(renderer)
+        panels = [axis for axis in figure.axes if axis.get_title() or axis.images] or figure.axes
         panel_top = max(
             (axis.title if axis.get_title() else axis).get_window_extent(renderer).y1
-            for axis in figure.axes if axis.get_title() or axis.images
+            for axis in panels
         )
         gap_in = (heading.y0 - panel_top) / figure.dpi / scale
         self.assertAlmostEqual(gap_in, 0.1, places=2)

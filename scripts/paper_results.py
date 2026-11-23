@@ -851,6 +851,22 @@ def plot_timing(results: PaperResults) -> plt.Figure:
                  title="A. Completion-event outcomes")
     outcomes.tick_params(axis="x", rotation=20)
     outcomes.legend(loc="upper center", bbox_to_anchor=(0.5, -0.20), ncol=2, fontsize=9)
+    _draw_timing_errors(axis, results, "B. Timing error for matched completions")
+    figure.suptitle("Temporal alignment beyond binary completion")
+    figure.tight_layout(rect=(0, 0, 1, 0.95))
+    return figure
+
+
+def plot_timing_errors(results: PaperResults) -> plt.Figure:
+    """Matched-completion timing error violins only (panel B of plot_timing)."""
+    figure, axis = plt.subplots(figsize=(9, 6))
+    _draw_timing_errors(axis, results, "")
+    figure.suptitle("Completion timing error for matched completions")
+    figure.tight_layout(rect=(0, 0, 1, 0.95))
+    return figure
+
+
+def _draw_timing_errors(axis: plt.Axes, results: PaperResults, title: str) -> None:
     timing_labels = []
     for position, key in enumerate(EVALUATION_MODELS, 1):
         frame = results.node_model
@@ -876,11 +892,8 @@ def plot_timing(results: PaperResults) -> plt.Figure:
     axis.set_xlim(0.5, len(timing_labels) + 0.5)
     axis.axhspan(-2, 2, color="gray", alpha=0.15)
     axis.axhline(0, color="black", linewidth=1)
-    axis.set(ylabel="Auditor - human completion time (s)", title="B. Timing error for matched completions")
+    axis.set(ylabel="Auditor - human completion time (s)", title=title)
     axis.text(0.02, 0.02, "Negative = early; positive = late", transform=axis.transAxes, fontsize=9)
-    figure.suptitle("Temporal alignment beyond binary completion")
-    figure.tight_layout(rect=(0, 0, 1, 0.95))
-    return figure
 
 
 def plot_simulator_endpoint(results: PaperResults) -> plt.Figure:
