@@ -32,6 +32,13 @@ The shared resolver in [prompts.py](../scripts/prompts.py) accepts:
 - `qwen3_v1` and `qwen35_mod1_v1` are versioned snapshots of the historical
   Qwen3 and Qwen3.5 Mod1 status prompts. Their wording is preserved from the
   prompt builders and can be selected independently of the serving model.
+- `molmo2_8b_v1` and `gemma4_e4b_it_v1` snapshot the Molmo2 and Gemma 4
+  status prompts used in the original eight-frame btaudit2 replays. Rendered
+  with empty history, they match every logged request except for the final
+  newline. One exception: 345 Molmo2 requests (15 episodes, runs
+  `molmo2_8b_20260806T1228`–`T1252`) contained unrelated text pasted into the
+  "keep scores smooth" rule. That paste has been removed from the builder and is
+  not in the snapshot.
 - An explicit path to a `.txt` template, including a previously saved snapshot.
 
 Use `--status-prompt <selector>` for Python CLIs, or `STATUS_PROMPT=<selector>`

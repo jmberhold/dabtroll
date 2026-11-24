@@ -635,7 +635,7 @@ def status_eval_text_molmo2_8b(
         "such as retreat, lost grasp, drop, worse alignment, or movement away "
         "from the destination.\n"
         "- 0.00 = status failure.\n"
-        "- Use history to keep scores smooth during continued All notebook registries now include gemma4c, including reviewer exports and the comparison plot, while the final Markdown and blank code cells remain untouched. I’m running the edited notebook now; expected persisted sizes are 24×469 episodes, 4,605 observations, 256 reviewer-node rows, and 192 reviewer-episode rows.advancement. Do not "
+        "- Use history to keep scores smooth during continued advancement. Do not "
         "lower below 0.50 unless current frames show actual regression. If this "
         "same node's history contains 1.00, keep complete at 1.00.\n\n"
 
