@@ -57,6 +57,17 @@ class PromptTests(unittest.TestCase):
                 args = ("action", "Pick $cup", "Cup lifted", progress, criteria)
                 self.assertEqual(profile(*args), builder(*args).rstrip("\n"), name)
 
+    def test_molmo2_and_gemma4_snapshots_match_replay_builders(self):
+        # Replays never pass history, so only the empty-history form is pinned.
+        for name, builder in (
+            ("molmo2_8b_v1", prompts.status_eval_text_molmo2_8b),
+            ("gemma4_e4b_it_v1", prompts.status_eval_text_gemma4_e4b_it),
+        ):
+            args = ("action", "Pick $cup", "Cup lifted", None, None)
+            text = prompts.load_status_prompt(name)(*args)
+            self.assertEqual(text, builder(*args).rstrip("\n"), name)
+            self.assertNotIn("notebook", text)
+
     def test_template_validation_and_frozen_resolution(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model_v2.txt"

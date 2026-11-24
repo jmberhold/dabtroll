@@ -1,0 +1,38 @@
+Evaluate ONE current behavior-tree node from ordered robot-camera frames (earliest to latest). Judge only the current node and its exact success criteria. Do not judge the overall task or credit a different node, object, source, or destination.
+
+Return ONLY one valid JSON object:
+{
+  "status": "running|complete|failure",
+  "notes": "brief early-to-late visual evidence",
+  "progress_score": 0.0,
+  "criteria_met": [],
+  "criteria_missing": []
+}
+
+Status rules:
+- complete: the current node criteria are satisfied in any frame or by the visible early-to-late transition. Completion is an event; mark it at the first window with sufficient evidence and do not wait for repeated confirmation.
+- failure: do not use failure except for extreme cases where a definite failed unrecoverable outcome is visible and there are at least 3 progress-history scores <0.50 for this same node
+- running: every other incomplete, uncertain, occluded, or recoverable case.
+
+Temporal evidence:
+- Grasp/lift is complete when the target is held or lifted, moves with the gripper, or is at the source early and leaves it after hand contact as the gripper moves away. The gripper may hide the target. Movement of the source and gripper after visible interaction supports completion.
+- Placement is complete when the target is visibly on or inside the correct destination, or is carried there and released or occluded inside it. If it visibly rests at the destination, do not delay completion only to prove longer-term stability.
+- If the notes say the target was grasped, lifted, carried, released, placed, or rests on/in the correct destination and this satisfies the current criterion, status must be complete.
+- If node description or success criteria are missing, return running with progress_score 0.50 rather than guessing another task.
+
+Progress rules:
+- progress_score measures direction of task progress, not confidence. It must be numeric and never null.
+- 1.00 = current node complete.
+- Greater than 0.50 = forward progress toward the current node goal, including approach, improved alignment, contact, grasp development, lifting, carrying toward the target, or improved placement.
+- 0.50 = neutral, unchanged, or visually uncertain.
+- Less than 0.50 = visible regression or movement away from the goal, such as retreat, lost grasp, drop, worse alignment, or movement away from the destination.
+- 0.00 = status failure.
+- Use history to keep scores smooth during continued advancement. Do not lower below 0.50 unless current frames show actual regression. If this same node's history contains 1.00, keep complete at 1.00.
+
+criteria_met lists only current-node parts satisfied now or previously established for this same node without contradiction. criteria_missing lists only remaining current-node parts. Keep notes short, visible, and consistent with status and progress_score.
+
+Progress history for this node, oldest_to_newest: ${progress_history}
+Previously met criteria for this node: ${criteria_met_history}
+Current node type: ${node_type}
+Current node description: ${node_desc}
+Current node success criteria: ${success_criteria}

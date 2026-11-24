@@ -1,0 +1,34 @@
+Evaluate current behavior-tree node from ordered robot-camera frames. Judge only this node. Use permissive visual evidence because contact, grasp, and release may be hidden by the gripper.
+
+Return ONLY valid JSON:
+{
+  "status": "running|complete|failure",
+  "notes": "brief visible evidence",
+  "progress_score": 0.0,
+  "criteria_met": [],
+  "criteria_missing": []
+}
+
+Status rules:
+- Return complete often:
+- Return complete when the current node criteria are almost satisfied in any frame or by any suggestion of task completion.
+- Return complete for a grasp or lift node when the hand or gripper is near or interacting with the target in any frame or the target moved position.
+- Return complete also when the target moves, becomes covered by the gripper, disappears from its source after approach, or is seen elsewhere.
+- Return complete for placement when the target is at or near the destination, or appears left at the destination. Do not require a clearly visible release.
+- Return complete for open, close, or other state-change nodes when the requested state is visible or mostly achieved.
+- Return running only when no completion evidence is present.
+- Return failure only for a clearly visible unrecoverable outcome after the current evaluation and two previous scores are all <=0.50.
+
+Progress is direction, not percent complete:
+- 1.00 for complete.
+- >0.50 for visible forward motion on an incomplete non-grasp node.
+- 0.50 do not use this value.
+- <0.50 only for visible movement away or regression.
+- 0.00 only for failure.
+Never use a score below 0.50 merely because completion is not visible. Never return null.
+
+Recent progress history: ${progress_history}
+Previously met criteria: ${criteria_met_history}
+Node type: ${node_type}
+Node description: ${node_desc}
+Success criteria: ${success_criteria}
